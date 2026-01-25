@@ -1,0 +1,87 @@
+{
+    "entities": {
+        "Health_factors": {
+            "short": "HealthF",
+            "verbose": "Health_factors"
+        },
+        "disease": {
+            "short": "Disease",
+            "verbose": "disease"
+        },
+        "drug": {
+            "short": "Drug",
+            "verbose": "drug"
+        },
+        "gene": {
+            "short": "Gene",
+            "verbose": "gene"
+        },
+        "method": {
+            "short": "Method",
+            "verbose": "method"
+        },
+        "physiology": {
+            "short": "Phys",
+            "verbose": "physiology"
+        },
+        "region": {
+            "short": "Region",
+            "verbose": "region"
+        },
+        "signs": {
+            "short": "Signs",
+            "verbose": "signs"
+        },
+        "symptom": {
+            "short": "Symptom",
+            "verbose": "symptom"
+        }
+    },
+    "relations": {
+        "treatment_for": {
+            "short": "treats",
+            "verbose": "treatment_for",
+            "symmetric": false
+        },
+        "occurs_in": {
+            "short": "occurs_in",
+            "verbose": "location information",
+            "symmetric": false
+        },
+        "located_in": {
+            "short": "located_in",
+            "verbose": "Auxiliary relation",
+            "symmetric": false
+        },
+        "help_diagnose": {
+            "short": "diagnoses",
+            "verbose": "help_diagnose",
+            "symmetric": false
+        },
+        "risk_factor_of": {
+            "short": "risk_of",
+            "verbose": "risk_factor_of",
+            "symmetric": false
+        },
+        "associated_with": {
+            "short": "assoc_with",
+            "verbose": "associated_with",
+            "symmetric": false
+        },
+        "characteristic_of": {
+            "short": "char_of",
+            "verbose": "characteristic_of",
+            "symmetric": false
+        },
+        "abbreviation_for": {
+            "short": "abbr_for",
+            "verbose": "abbreviation_for",
+            "symmetric": false
+        },
+        "hyponym_of": {
+            "short": "hyponym_of",
+            "verbose": "hyponym_of",
+            "symmetric": false
+        }
+    }
+}

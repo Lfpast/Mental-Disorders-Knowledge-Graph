@@ -1,0 +1,59 @@
+# General Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environments
+venv/
+env/
+.env
+.venv/
+conda/
+
+# IDE Settings
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# MDKG Project Specific
+
+# 1. Inputs (Downloaded via data_downloader.py / extract_entities.py / ontologies_downloader.py)
+models/InputsAndOutputs/input/*
+!models/InputsAndOutputs/input/.gitkeep
+
+# 2. Outputs (Generated logs, checkpoints, results, predictions)
+models/InputsAndOutputs/output/*
+!models/InputsAndOutputs/output/.gitkeep
+
+# 3. Pretrained Models (Downloaded via model_downloader.py)
+models/InputsAndOutputs/pretrained/*
+!models/InputsAndOutputs/pretrained/.gitkeep
+
+# Note: 'configs' directories are NOT ignored as they are part of the source code.
+# models/InputsAndOutputs/configs/ -> Kept
+# models/SynSpERT/configs/         -> Kept
+
+models/InputsAndOutputs/input/
+models/InputsAndOutputs/output/
+
+# Temporary logs
+*.log
