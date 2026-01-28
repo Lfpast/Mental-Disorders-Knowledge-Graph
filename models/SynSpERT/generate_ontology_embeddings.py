@@ -6,6 +6,14 @@ This script:
 2. Generates embeddings using CODER++ model
 3. Saves results to InputsAndOutputs/output/linked_ontology/
 
+Inputs:
+- OBO files located in `models/InputsAndOutputs/input/ontologies/` (hpo.obo, go.obo, etc.)
+- CODER++ model in `models/InputsAndOutputs/pretrained/`
+
+Outputs:
+- JSON files with embedded terms under `models/InputsAndOutputs/output/linked_ontology/`:
+  - `go_terms.json`, `hpo_terms.json`, etc., each containing term dicts with `sapbert_embedding` vectors.
+
 Prerequisites:
 - Run ontologies_downloader.py first to download .obo files
 - CODER++ model in InputsAndOutputs/pretrained/

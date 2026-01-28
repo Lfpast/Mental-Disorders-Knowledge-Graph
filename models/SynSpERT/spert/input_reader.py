@@ -1,8 +1,23 @@
+"""
+Input readers for datasets used by SpERT training and evaluation.
+
+This module implements `BaseInputReader` and `JsonInputReader` which parse
+dataset JSON files (as produced by `generate_input.py`) into `Dataset`,
+`Document`, `Entity` and `Relation` instances used by the training pipeline.
+
+Inputs:
+- `types_path`: path to JSON file describing entity and relation types.
+- Tokenizer: a `BertTokenizer` instance used to convert tokens to ids.
+
+Outputs:
+- Populates `Dataset` objects accessible via `get_dataset(label)`.
+"""
+
 import json
 from abc import abstractmethod, ABC
 from collections import OrderedDict
 from logging import Logger
-from typing import Iterable, List
+from typing import Iterable, List, Any
 
 from tqdm import tqdm
 from transformers import BertTokenizer

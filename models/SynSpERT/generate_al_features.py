@@ -4,6 +4,15 @@ Generate Active Learning Features
 ==================================
 This script runs model evaluation on the full dataset to generate
 entropy and embedding features needed for active learning.
+
+Inputs:
+- Uses `Runner` to invoke the evaluation pipeline with `--save_features`.
+- Expects a trained model directory in `models/InputsAndOutputs/pretrained` or the `SAVE_PATH`.
+
+Outputs:
+- Entropy tensors (`entropy_relation_*.pt`, `entropy_entities_*.pt`),
+  `pooler_output_*.pt` and `labelprediction_*.pt` written into the
+  evaluation `log` directory for the specified run name.
 """
 
 import os

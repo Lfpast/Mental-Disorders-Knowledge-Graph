@@ -1,3 +1,22 @@
+"""
+Entities and Document data structures for SpERT
+
+This module defines lightweight data classes used by the SpERT pipeline:
+- EntityType, RelationType: small descriptors for types
+- Token, TokenSpan, Entity, Relation, Document: runtime objects representing
+  tokenization, entity mentions, relations and documents
+- Dataset: collection of documents with convenience builders used by the
+  input reader and training loop.
+
+Inputs:
+- Instances are typically constructed by the `JsonInputReader` from
+  dataset JSON files.
+
+Outputs:
+- These classes are used throughout the pipeline and passed to samplers,
+  models and evaluators; they do not perform I/O themselves.
+"""
+
 from collections import OrderedDict
 from typing import List
 from torch.utils.data import Dataset as TorchDataset

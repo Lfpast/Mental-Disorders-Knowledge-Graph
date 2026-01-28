@@ -1,28 +1,38 @@
 """
 MDKG Active Learning Script
 ===========================
-Select the most informative samples using entropy-based methods
+Select the most informative samples using entropy-based methods.
 
-Quick Start (3 steps):
-================
-1. Generate features (5-15 mins):
-   cd models/SynSpERT
-   python generate_AL_features.py
+This script performs the following high-level steps:
+1. Loads precomputed feature tensors and entropy scores saved by
+   `models/SynSpERT/generate_al_features.py`.
+2. Runs clustering (K-Means or weighted K-Means) on the feature
+   embeddings to partition the unlabeled pool.
+3. Scores clusters using entropy and class distribution to select
+   high-information samples.
+4. Saves a JSON file containing the selected samples.
 
-2. Run this script (30 secs):
-   cd (root directory)
-   python Active_learning.py
+Inputs (paths & types):
+- root data directory: str (constants defined in the module)
+- required files (torch tensors saved with torch.save):
+  - `entropy_relation_{Names}.pt` (torch.Tensor of shape [n_sample])
+  - `entropy_entities_{Names}.pt` (torch.Tensor of shape [n_sample])
+  - `labelprediction_{Names}.pt` (torch.Tensor with label predictions)
+  - `pooler_output_{Names}.pt` (torch.Tensor of shape [n_sample, d])
 
-3. Check results:
-   Output: sampling_json_run_v1_sampled.json (200 selected samples)
+Outputs:
+- `sampling_json_{SaveNames}.json` (JSON array of selected sample objects)
+- Saved PyTorch tensors for debugging: `weighted_embedding_{SaveNames}.pt`, `class_number_{SaveNames}.pt`
+
+Return / Side-effects:
+- This module, when executed, writes files to disk and prints a summary
+  to stdout. There is no return value when run as a script.
 
 Configuration:
-=========
-Modify parameters below to customize selection:
-  - Names: Model name (consistent with training, default 'run_v1')
-  - topK: Number of clusters to select (default 20)
-  - sample_per_group: Samples per cluster (default 10, total 200)
-  - ncentroids: Number of K-Means clusters (default 20)
+- Names: str - Model run name (default 'run_v1')
+- topK: int - Number of clusters to select (default 20)
+- sample_per_group: int - Samples per cluster (default 10)
+- ncentroids: int - Number of K-Means clusters (default 20)
 """
 
 import json

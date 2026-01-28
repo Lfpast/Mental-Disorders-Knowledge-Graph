@@ -1,3 +1,14 @@
+"""
+Augment input JSON documents with syntactic features using SciSpaCy.
+
+Inputs:
+- JSON files in `models/InputsAndOutputs/input/` (e.g. `md_train_KG_0217.json`)
+
+Outputs:
+- Writes augmented JSON files with additional fields: `pos_tags`, `dep_label`,
+  `verb_indicator`, `dep_head` to `*_agu.json` counterparts.
+"""
+
 import spacy
 import scispacy
 import os
@@ -5,10 +16,38 @@ import json
 import warnings
 from spacy.tokens import Doc
 from more_itertools import locate
+from typing import List
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 nlp = spacy.load("en_core_sci_sm")
 
+
+def custom_tokenizer(text: str) -> Doc:
+    """Tokenize by whitespace to preserve original tokenization used by dataset."""
+    tokens = text.split(" ")
+    return Doc(nlp.vocab, tokens)
+
+nlp.tokenizer = custom_tokenizer
+
+class JsonInputAugmenter():
+    """Augment dataset JSON files with syntactic annotations for each sentence."""
+    def __init__(self):
+        date = '0217'  # Date or version identifier for the dataset
+        basepath = os.path.join('..', 'InputsAndOutputs', 'input')  # Set your base path here
+        
+        # Paths to input data files
+        self.input_dataset_paths = [
+            os.path.join(basepath, 'md_train_KG_' + date + '.json'),
+            os.path.join(basepath, 'md_test_KG_' + date + '.json'),
+            os.path.join(basepath, 'md_KG_all_' + date + '.json')
+        ]
+        
+        # Paths to output data files
+        self.output_dataset_paths = [
+            os.path.join(basepath, 'md_train_KG_' + date + '_agu.json'),
+            os.path.join(basepath, 'md_test_KG_' + date + '_agu.json'),
+            os.path.join(basepath, 'md_KG_all_' + date + '_agu.json')
+        ]
 def custom_tokenizer(text):
     tokens = text.split(" ")
     return Doc(nlp.vocab, tokens)

@@ -1,3 +1,27 @@
+"""
+Argument parsing utilities for SynSpERT training and evaluation scripts.
+
+This module provides a single configurable argument parser used by the
+`Runner` and CLI wrapper scripts. The parser exposes configuration for
+preprocessing, model training/evaluation, logging and miscellaneous
+runtime options.
+
+Inputs:
+- CLI arguments passed as list[str] when invoked via `Runner.Runner.run()`.
+
+Outputs:
+- Returns an `argparse.ArgumentParser` configured with the commonly used
+  options for the SynSpERT training/evaluation pipeline.
+
+Structure:
+- The returned parser contains groups for preprocessing, logging, model
+  training/eval and miscellaneous options.
+
+Example usage:
+    parser = get_argparser()
+    args = parser.parse_args()
+"""
+
 import argparse
 import sys
 
@@ -6,7 +30,7 @@ import sys
 
 
 #def _add_all_args(arg_parser):
-def get_argparser():
+def get_argparser() -> argparse.ArgumentParser:
     arg_parser = argparse.ArgumentParser()
 
     arg_parser.add_argument('mode', type=str, help="Mode: 'train' or 'eval'")

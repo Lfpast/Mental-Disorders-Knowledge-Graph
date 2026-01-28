@@ -1,3 +1,16 @@
+"""
+Trainer implementation for SpERT models.
+
+Provides `SpERTTrainer` that wraps data loading, training loops, evaluation
+and model checkpointing for joint entity and relation extraction.
+
+Inputs:
+- CLI args (`argparse.Namespace`) and a `BertConfig` instance.
+
+Outputs:
+- Trained models saved to disk and evaluation logs written to the log path.
+"""
+
 import argparse
 import math
 import os

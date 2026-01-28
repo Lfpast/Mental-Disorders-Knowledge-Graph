@@ -1,3 +1,14 @@
+"""
+Download and stage pretrained models required by the project (e.g., CODER++).
+
+Inputs:
+- `MODEL_URL` pointing to a model repository (default: HF repo URL)
+- Target directory `models/InputsAndOutputs/pretrained`
+
+Outputs:
+- Model files copied into the `pretrained` directory ready for use.
+"""
+
 import os
 import subprocess
 import shutil

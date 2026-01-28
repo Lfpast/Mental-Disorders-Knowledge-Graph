@@ -57,7 +57,7 @@ def add_syntax_info(doc, context_size: int):
     return dephead, deplabel, pos
 
 
-def create_train_sample(doc, neg_entity_count: int, neg_rel_count: int, max_span_size: int, rel_type_count: int):
+def create_train_sample(doc, neg_entity_count: int, neg_rel_count: int, max_span_size: int, rel_type_count: int) -> dict:
     encodings = doc.encoding
     token_count = len(doc.tokens)
     context_size = len(encodings)
@@ -185,7 +185,7 @@ def create_train_sample(doc, neg_entity_count: int, neg_rel_count: int, max_span
                 dephead= dephead, deplabel=deplabel, pos =pos)
 
 
-def create_eval_sample(doc, max_span_size: int):
+def create_eval_sample(doc, max_span_size: int) -> dict:
     encodings = doc.encoding
     token_count = len(doc.tokens)
     context_size = len(encodings)

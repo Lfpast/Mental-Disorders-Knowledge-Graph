@@ -1,3 +1,19 @@
+"""
+Evaluation utilities for SpERT
+
+Provides the `Evaluator` class which converts model predictions into
+human-readable entities/relations, computes NER and relation extraction
+metrics and stores prediction outputs and HTML examples.
+
+Inputs:
+- `Evaluator` is instantiated with a `Dataset`, `JsonInputReader` for type
+  lookup and a `BertTokenizer` for detokenization.
+
+Outputs:
+- Methods such as `compute_scores()` return metric tuples; `store_predictions`
+  writes a JSON file of predictions to disk.
+"""
+
 import json
 import os
 import warnings

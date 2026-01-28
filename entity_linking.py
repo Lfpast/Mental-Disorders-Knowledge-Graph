@@ -1,5 +1,33 @@
 """
 Optimized Entity Linking Script - Skip UMLS processing for faster results
+
+This module implements an `EntityLinker` class which links unique entity
+mentions to ontology terms (GO, HPO, MONDO, UBERON) and optionally to
+UMLS concepts. The implementation uses SapBERT for embedding generation
+and FAISS for fast nearest-neighbor search.
+
+Inputs:
+- `config` (dict) describing model and data paths. Keys:
+  - embedding_model_path: str (path to pretrained SapBERT)
+  - database_embedding_path: str (path to directory containing *_terms.json files)
+  - unique_entity_list_path: str (path to JSON array of entity strings)
+  - enable_umls: bool (optional, default False)
+
+Outputs:
+- `link_entities()` -> dict mapping entity surface strings to link info:
+  {
+    "entity": {
+      "entity_id": str,
+      "entity_ontology": str,
+      "entity_onto_term": str,
+      "similarity": float
+    },
+    ...
+  }
+
+Notes:
+- This file augments methods with type hints and structured docstrings to
+  make inputs/outputs explicit for maintainability and automated analysis.
 """
 import torch
 from transformers import BertTokenizer, BertModel
@@ -82,13 +110,48 @@ class EntityLinker:
         self.nlp.add_pipe("scispacy_linker", config={"resolve_abbreviations": True, "linker_name": "umls"})
         self.linker = self.nlp.get_pipe("scispacy_linker")
 
-    def get_bert_embedding(self, text):
+    def get_bert_embedding(self, text: str) -> "np.ndarray":
+        """
+        Compute a SapBERT embedding for the given text.
+
+        Args:
+            text (str): Input text to encode.
+
+        Returns:
+            np.ndarray: 1-D numpy array representing the pooled embedding
+                (shape: [d]).
+
+        Structure:
+            {
+                "type": "ndarray",
+                "shape": ["d"],
+                "dtype": "float32"
+            }
+        """
         inputs = self.tokenizer(text, return_tensors="pt", padding=True, truncation=True).to(self.device)
         with torch.no_grad():
             outputs = self.model(**inputs, return_dict=True)
         return outputs.last_hidden_state.mean(dim=1).cpu().squeeze().numpy()
 
-    def get_best_match(self, entity_embeddings, index, terms_with_embeddings):
+    def get_best_match(self, entity_embeddings: "np.ndarray", index, terms_with_embeddings: list) -> dict:
+        """
+        Query FAISS index to obtain the best matching term for an embedding.
+
+        Args:
+            entity_embeddings (np.ndarray): Query embedding(s), shape [1, d] or [d].
+            index: FAISS index object supporting `search`.
+            terms_with_embeddings (list[dict]): List of term dicts aligned with
+                the index where each dict contains at least a `sapbert_embedding`.
+
+        Returns:
+            dict: The term dict corresponding to the nearest neighbor.
+
+        Structure:
+            {
+                "type": "dict",
+                "keys": ["id", "name", "sapbert_embedding", ...]
+            }
+        """
         if entity_embeddings.ndim == 1:
             entity_embeddings = entity_embeddings[np.newaxis, :]
         D, I = index.search(entity_embeddings, 1)
@@ -96,12 +159,32 @@ class EntityLinker:
         best_term = terms_with_embeddings[best_idx]
         return best_term
 
-    def cosine_similarity(self, vec1, vec2):
+    def cosine_similarity(self, vec1: "np.ndarray", vec2: "np.ndarray") -> float:
+        """
+        Compute cosine similarity between two vectors.
+
+        Args:
+            vec1 (np.ndarray): Vector 1.
+            vec2 (np.ndarray): Vector 2.
+
+        Returns:
+            float: Cosine similarity in [-1, 1].
+        """
         vec1 = vec1.flatten()
         vec2 = vec2.flatten()
         return np.dot(vec1, vec2) / (np.linalg.norm(vec1) * np.linalg.norm(vec2))
 
-    def create_faiss_index(self, terms_with_embeddings, use_gpu):
+    def create_faiss_index(self, terms_with_embeddings: list, use_gpu: bool):
+        """
+        Create a FAISS index from a list of term dicts containing embeddings.
+
+        Args:
+            terms_with_embeddings (list[dict]): Each dict must have 'sapbert_embedding'.
+            use_gpu (bool): Whether to create a GPU-backed index (if available).
+
+        Returns:
+            FAISS index object ready for nearest neighbor queries.
+        """
         embedding_size = len(terms_with_embeddings[0]['sapbert_embedding'])
         embedding_matrix = np.array([term['sapbert_embedding'] for term in terms_with_embeddings]).astype('float32')
         faiss.normalize_L2(embedding_matrix)

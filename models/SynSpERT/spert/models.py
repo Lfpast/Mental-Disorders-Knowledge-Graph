@@ -33,8 +33,18 @@ import torch.nn.functional as F
 #h.shape= (10, 40, 768) => 10 sentences each 40 tokens long. [(Sentence embedding)+]
 #x.shape= (10, 40) => 10 sentences each 40 tokens long. [(Sentence encoding)+]
 
-def get_token(h: torch.tensor, x: torch.tensor, token: int):  #'token' is the numeric id, e.g., 'CLS'
-    """ Get specific token embedding (e.g. [CLS]) """
+def get_token(h: torch.Tensor, x: torch.Tensor, token: int) -> torch.Tensor:  #'token' is the numeric id, e.g., 'CLS'
+    """Get specific token embedding (e.g. [CLS]).
+
+    Args:
+        h (torch.Tensor): BERT output tensor of shape [batch, seq_len, hidden].
+        x (torch.Tensor): Encodings tensor containing token ids.
+        token (int): Token id to extract (e.g., CLS token id).
+
+    Returns:
+        torch.Tensor: Tensor containing the selected token embeddings from all
+        positions where `x == token`.
+    """
 
     emb_size = h.shape[-1]
 

@@ -34,7 +34,8 @@ def unzip_file(zip_path, extract_to):
         print(f"Error extracting file: {e}")
         exit(1)
 
-def main():
+def main() -> None:
+    """Orchestrate download, extraction and post-processing of the dataset."""
     # 1. Create target directory if it doesn't exist
     if not os.path.exists(TARGET_DIR):
         print(f"Creating directory: {TARGET_DIR}")

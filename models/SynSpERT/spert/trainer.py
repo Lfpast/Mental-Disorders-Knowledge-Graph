@@ -1,9 +1,23 @@
+"""
+Base trainer utilities used by SpERT training and evaluation scripts.
+
+Defines `BaseTrainer` which handles logging, checkpoint saving and common
+utilities for training runs.
+
+Inputs:
+- `args`: CLI arguments Namespace
+- `config`: BertConfig used by models
+
+Outputs:
+- Creating directories, saving checkpoints and logging to CSV/Tensorboard.
+"""
+
 import argparse
 import datetime
 import logging
 import os
 import sys
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any
 
 import torch
 from torch.nn import DataParallel

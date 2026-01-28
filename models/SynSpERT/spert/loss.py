@@ -17,7 +17,13 @@ class SpERTLoss(Loss):
         self._scheduler = scheduler
         self._max_grad_norm = max_grad_norm
 
-    def compute(self, entity_logits, rel_logits, entity_types, rel_types, entity_sample_masks, rel_sample_masks):
+    def compute(self, entity_logits: torch.Tensor, rel_logits: torch.Tensor, entity_types: torch.Tensor,
+                rel_types: torch.Tensor, entity_sample_masks: torch.Tensor, rel_sample_masks: torch.Tensor) -> float:
+        """Compute the joint training loss and perform an optimizer step.
+
+        Returns:
+            float: The scalar training loss value.
+        """
         # entity loss
         entity_logits = entity_logits.view(-1, entity_logits.shape[-1])
         entity_types = entity_types.view(-1)

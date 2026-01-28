@@ -1,9 +1,27 @@
+"""
+Convert BRAT .ann/.txt annotation pairs to sentence-level JSON used by the
+training pipeline.
+
+Inputs:
+- Directory containing .txt and .ann files where file basenames match.
+
+Outputs:
+- Writes per-document JSON files containing tokenized sentences with
+  entity and relation annotations.
+
+Notes:
+- The module exposes an `Annotation` class with `obtain_annotations()` and
+  `to_json()` convenience functions used by `generate_input.py`.
+"""
+
 import os
 import logging
 import nltk
 from nltk.tokenize.punkt import PunktSentenceTokenizer
 import string
 import json
+from typing import Generator, Tuple, List, Optional
+
 sentence_tokenizer = PunktSentenceTokenizer()
 
 def span_tokenizer(txt):
