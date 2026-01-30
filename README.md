@@ -20,14 +20,25 @@ MDKG/
 ├── models/
 │   ├── SynSpERT/              # Core model training and evaluation code
 │   └── InputsAndOutputs/      # Data management directory
-│       ├── configs/           # Model configurations
+│       ├── configs/           # Model configurations (incl. prediction_config.json)
 │       ├── input/             # Raw and processed datasets
 │       ├── output/            # Training logs, saved models, and results
+│       │   └── prediction/    # Drug repurposing model outputs (NEW)
 │       └── pretrained/        # Pretrained BERT/CODER models
+├── prediction/                # Drug Repurposing Prediction Module (NEW)
+│   ├── __init__.py            # Module exports
+│   ├── data_loader.py         # MDKG data loading and graph construction
+│   ├── models.py              # HeteroRGCN and link prediction models
+│   ├── predictor.py           # Main DrugRepurposingPredictor class
+│   ├── evaluator.py           # Evaluation metrics (MRR, Hits@K, etc.)
+│   └── demo.py                # Interactive demonstration script
 ├── shell/                     # Automation scripts for all pipelines
-├── Active_learning.py         # Main script for Active Learning sample selection
+├── active_learning.py         # Main script for Active Learning sample selection
 ├── entity_linking.py          # Main script for Entity Linking
 ├── extract_entities.py        # Entity extraction utility
+├── graph_rag.py               # Graph RAG core module
+├── graph_rag_demo.py          # Graph RAG interactive demo
+├── graph_rag_api.py           # Graph RAG REST API server
 ├── requirements.txt           # Required libraries
 └── triplets_refine_prompt.py  # Triplet extraction and prompt generation
 ```
@@ -198,6 +209,232 @@ python entity_linking.py
 
 ---
 
+### Stage 6: Graph RAG for Mental Health Q&A (NEW)
+
+This stage enables **Knowledge Graph-enhanced Retrieval-Augmented Generation (Graph RAG)** for answering mental health questions. The implementation is inspired by the [KGARevion paper](https://arxiv.org/abs/2410.04660).
+
+**Input**: Entity Linking Results, Extracted Triplets, LLM API  
+**Output**: Accurate, knowledge-grounded answers to mental health questions
+
+#### How Graph RAG Works
+
+The system operates through four key actions (following KGARevion design):
+
+1. **Generate**: Extract medical concepts from the query and generate relevant knowledge triplets using the LLM
+2. **Review**: Verify generated triplets against the MDKG knowledge graph
+3. **Revise**: Iteratively correct rejected triplets to improve coverage
+4. **Answer**: Generate the final answer based on verified, grounded knowledge
+
+```
+┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌──────────────┐
+│   Generate  │ -> │    Review    │ -> │   Revise    │ -> │    Answer    │
+│  (Triplets) │    │  (Verify KG) │    │  (Correct)  │    │  (Response)  │
+└─────────────┘    └──────────────┘    └─────────────┘    └──────────────┘
+      │                   │                   │                  │
+      v                   v                   v                  v
+   LLM extracts      Check against      Fix rejected       Generate final
+   medical concepts  MDKG triplets      triplets           answer with KG
+```
+
+#### Method 1: Shell Script
+```bash
+# Interactive Q&A mode
+bash shell/graph_rag.sh -i
+
+# Demo mode with sample questions
+bash shell/graph_rag.sh -d -v
+
+# Single query
+bash shell/graph_rag.sh -q "What are the symptoms of depression?"
+
+# Use local Ollama instead of OpenAI
+bash shell/graph_rag.sh --llm ollama --model llama3 -i
+```
+
+#### Method 2: Python Script
+```bash
+# Interactive mode
+python graph_rag_demo.py --interactive
+
+# Demo mode
+python graph_rag_demo.py --demo --verbose
+
+# Single query with OpenAI
+export OPENAI_API_KEY="your-api-key"
+python graph_rag_demo.py -q "How does lithium treat bipolar disorder?"
+
+# Use Ollama (local LLM)
+python graph_rag_demo.py --llm ollama --model llama3 -i
+```
+
+#### Method 3: Python API
+```python
+from graph_rag import create_graph_rag
+
+# Initialize with OpenAI
+rag = create_graph_rag(
+    llm_type="openai",
+    llm_model="gpt-4",
+    api_key="your-api-key"
+)
+
+# Or with local Ollama
+rag = create_graph_rag(
+    llm_type="ollama",
+    llm_model="llama3"
+)
+
+# Query
+result = rag.query("What are the risk factors for schizophrenia?")
+print(result.answer)
+print(f"Confidence: {result.confidence:.2%}")
+print(f"Verified triplets: {len(result.verified_triplets)}")
+```
+
+#### Method 4: REST API Server
+```bash
+# Start the API server
+python graph_rag_api.py --port 8000
+
+# Query via curl
+curl -X POST http://localhost:8000/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What are symptoms of anxiety disorder?"}'
+```
+
+#### Supported LLM Backends
+
+| Backend | Description | Setup |
+|---------|-------------|-------|
+| OpenAI | GPT-4, GPT-3.5-turbo | Set `OPENAI_API_KEY` env variable |
+| Ollama | Local LLMs (Llama3, Mistral) | Install [Ollama](https://ollama.ai) and run `ollama pull llama3` |
+| HuggingFace | Local transformers models | Requires GPU with sufficient VRAM |
+
+---
+
+### Stage 7: Drug Repurposing Prediction (NEW)
+
+This stage enables **Drug-Disease Link Prediction** for drug repurposing in mental health disorders. The implementation is inspired by [TxGNN](https://www.nature.com/articles/s41591-024-03233-x) (Nature Medicine 2024).
+
+**Input**: MDKG Knowledge Graph (triplets + entity linking)  
+**Output**: Ranked drug-disease predictions for drug repurposing
+
+#### How Drug Repurposing Prediction Works
+
+The system implements a Graph Neural Network (GNN) approach with metric learning:
+
+1. **Knowledge Graph Construction**: Build heterogeneous graph from MDKG triplets
+2. **Pre-training**: Train GNN on all edge types for link prediction
+3. **Fine-tuning**: Specialize on drug-disease relations with prototype learning
+4. **Zero-shot Prediction**: Leverage disease similarity for novel predictions
+
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  Load MDKG      │ -> │  Pre-train GNN  │ -> │  Fine-tune on   │ -> │  Predict New    │
+│  Knowledge Graph│    │  (All edges)    │    │  Drug-Disease   │    │  Indications    │
+└─────────────────┘    └─────────────────┘    └─────────────────┘    └─────────────────┘
+        │                      │                      │                      │
+        v                      v                      v                      v
+   Build DGL graph        Learn node           Metric learning        Rank drugs for
+   from triplets          embeddings           + prototypes           diseases
+```
+
+#### Key Features
+
+- **Zero-shot Prediction**: Predict treatments for diseases with no training data
+- **Disease Similarity**: Similar diseases share treatment patterns
+- **Prototype Learning**: Aggregate knowledge from similar entities
+- **Multi-relation**: Supports indication, contraindication, and off-label use
+
+#### Method 1: Shell Script
+```bash
+# Train the model
+bash shell/prediction.sh train
+
+# Quick training (for testing)
+bash shell/prediction.sh quick
+
+# Predict new indications for a drug
+bash shell/prediction.sh predict quetiapine
+
+# Predict treatments for a disease
+bash shell/prediction.sh treatments depression
+
+# Evaluate model performance
+bash shell/prediction.sh evaluate
+
+# Interactive mode
+bash shell/prediction.sh interactive
+```
+
+#### Method 2: Python Script
+```bash
+# Interactive demo
+python -m prediction.demo
+
+# Train and demo
+python -m prediction.demo --train --demo
+
+# Quick mode for testing
+python -m prediction.demo --quick --demo
+
+# Predict for specific drug
+python -m prediction.demo --predict aripiprazole
+```
+
+#### Method 3: Python API
+```python
+from prediction import DrugRepurposingPredictor, DrugRepurposingEvaluator
+
+# Initialize predictor
+predictor = DrugRepurposingPredictor(
+    data_folder="./models/InputsAndOutputs"
+)
+
+# Load data and train
+predictor.load_data(split='random', seed=42)
+predictor.train()
+
+# Drug repurposing: Find new indications for a drug
+results = predictor.predict_repurposing("quetiapine", top_k=10)
+for disease, score, onto_info in results:
+    print(f"{disease}: {score:.4f}")
+
+# Treatment prediction: Find drugs for a disease  
+treatments = predictor.predict_treatments("depression", top_k=10)
+for drug, score, onto_info in treatments:
+    print(f"{drug}: {score:.4f}")
+
+# Get specific drug-disease score
+score = predictor.predict_drug_disease("lithium", "bipolar")
+print(f"Lithium for Bipolar: {score:.4f}")
+
+# Evaluate model
+evaluator = DrugRepurposingEvaluator(predictor)
+results = evaluator.full_evaluation()
+print(results['disease_centric'])
+```
+
+#### Evaluation Metrics
+
+| Metric | Description |
+|--------|-------------|
+| MRR | Mean Reciprocal Rank of true predictions |
+| Hits@K | Proportion of true predictions in top K |
+| AUROC | Area Under ROC Curve (classification) |
+| AUPRC | Area Under Precision-Recall Curve |
+
+#### Model Architecture
+
+The prediction module uses **HeteroRGCN** (Heterogeneous Relational Graph Convolutional Network):
+
+- **Node Embeddings**: Learnable embeddings for drugs, diseases, genes, symptoms
+- **Message Passing**: Relation-specific weight matrices for each edge type
+- **Link Prediction**: DistMult scoring with relation embeddings
+- **Metric Learning**: Prototype-based augmentation for rare diseases
+
+---
+
 ## Requirements
 
 - **OS**: Linux (Recommended)
@@ -206,6 +443,20 @@ python entity_linking.py
 
 ### Key Python Packages
 - `torch`, `transformers` (HuggingFace)
+- `dgl` (Deep Graph Library for GNN)
 - `numpy`, `scikit-learn`
 - `faiss-cpu` or `faiss-gpu` (for fast vector search)
 - `tqdm` (for progress bars)
+- `openai` (for Graph RAG with OpenAI)
+- `fastapi`, `uvicorn` (optional, for REST API server)
+
+---
+
+## References
+
+- **TxGNN Paper**: [Zero-shot prediction of therapeutic use with geometric deep learning](https://www.nature.com/articles/s41591-024-03233-x)
+  - The drug repurposing prediction is inspired by TxGNN's approach using GNNs with metric learning
+- **KGARevion Paper**: [An AI Agent for Knowledge-Intensive Biomedical QA](https://arxiv.org/abs/2410.04660)
+  - The Graph RAG implementation is inspired by the KGARevion approach which uses Generate-Review-Revise-Answer actions
+- **SynSpERT**: Span-based Joint Entity and Relation Extraction with Transformers
+- **SapBERT**: Self-Alignment Pre-training for Biomedical Entity Representations
