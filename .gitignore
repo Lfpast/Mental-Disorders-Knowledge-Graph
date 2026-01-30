@@ -57,3 +57,4 @@ models/InputsAndOutputs/output/
 
 # Temporary logs
 *.log
+prompt.txt

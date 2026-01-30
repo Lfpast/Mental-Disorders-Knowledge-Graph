@@ -1,0 +1,106 @@
+# ==============================================================================
+# MDKG Conda Environment Configuration
+# ==============================================================================
+# This file defines all dependencies for the MDKG project with proper version
+# compatibility, especially for DGL + PyTorch + CUDA combinations.
+#
+# Usage:
+#   Create environment:  conda env create -f environment.yaml
+#   Update environment:  conda env update -f environment.yaml --prune
+#   Activate:            conda activate MDKG
+#
+# TESTED CONFIGURATION (January 2026):
+#   - PyTorch 2.5.1 + CUDA 12.1
+#   - DGL 2.4.0+cu121
+#   - RTX 4060 GPU
+#   - Python 3.10
+# ==============================================================================
+
+name: MDKG
+
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python version
+  - python=3.10
+
+  # ===========================================================================
+  # Scientific Computing
+  # ===========================================================================
+  - numpy>=1.24.0
+  - pandas>=2.0.0
+  - scikit-learn>=1.3.0
+  - scipy>=1.11.0
+
+  # ===========================================================================
+  # NLP Libraries (Conda)
+  # ===========================================================================
+  - transformers>=4.35.0
+  - tokenizers>=0.15.0
+  - huggingface_hub
+
+  # ===========================================================================
+  # Utilities
+  # ===========================================================================
+  - tqdm
+  - requests
+  - pyyaml
+  - jsonschema
+
+  # ===========================================================================
+  # Vector Search (FAISS with GPU support)
+  # ===========================================================================
+  - faiss-gpu
+
+  # ===========================================================================
+  # Pip-only packages
+  # ===========================================================================
+  - pip
+  - pip:
+      # PyTorch with CUDA 12.1 support
+      - torch==2.5.1
+      - torchvision==0.20.1
+      - torchaudio==2.5.1
+      
+      # DGL for Graph Neural Networks
+      - dgl
+      
+      # NLP - Spacy ecosystem
+      - spacy>=3.8.0
+      - scispacy>=0.5.4
+      - https://s3-us-west-2.amazonaws.com/ai2-s2-scispacy/releases/v0.5.4/en_core_sci_sm-0.5.4.tar.gz
+      
+      # NLTK
+      - nltk>=3.8.0
+      
+      # API frameworks
+      - fastapi>=0.109.0
+      - uvicorn>=0.27.0
+      - pydantic>=2.5.0
+      
+      # OpenAI
+      - openai>=1.0.0
+      
+      # Optional: ontology parsing
+      - pronto>=2.5.0
+
+# ==============================================================================
+# Post-installation notes:
+# ==============================================================================
+# After creating the environment, install PyTorch and DGL with correct CUDA:
+#
+#   conda activate MDKG
+#   pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
+#   pip install dgl -f https://data.dgl.ai/wheels/torch-2.5/cu121/repo.html
+#
+# Then download spacy models:
+#   python -m spacy download en_core_web_sm
+#   python -c "import nltk; nltk.download('punkt'); nltk.download('stopwords')"
+#
+# Verify installation:
+#   python -c "import torch; import dgl; print(f'PyTorch: {torch.__version__}, DGL: {dgl.__version__}')"
+# ==============================================================================
