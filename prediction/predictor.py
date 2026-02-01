@@ -33,6 +33,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.optim import Adam
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+from tqdm import tqdm
 
 try:
     import dgl
@@ -48,32 +49,32 @@ from .models import HeteroRGCN, LinkPredictor
 class TrainingConfig:
     """Configuration for model training."""
     # Model architecture
-    n_inp: int = 128
-    n_hid: int = 128
-    n_out: int = 128
-    attention: bool = False
+    n_inp: int = 256          # Increased from 128 for richer representations
+    n_hid: int = 256          # Increased hidden dimension
+    n_out: int = 256          # Increased output dimension
+    attention: bool = True    # Enable attention for better aggregation
     proto: bool = True
-    proto_num: int = 3
+    proto_num: int = 5        # Increased from 3 for more prototype neighbors
     sim_measure: str = 'embedding'
     agg_measure: str = 'rarity'
-    exp_lambda: float = 0.7
-    dropout: float = 0.1
+    exp_lambda: float = 0.5   # Adjusted for better rare disease handling
+    dropout: float = 0.2      # Increased dropout for regularization
     
     # Training hyperparameters
-    pretrain_epochs: int = 50
-    finetune_epochs: int = 200
-    pretrain_lr: float = 1e-3
-    finetune_lr: float = 5e-4
+    pretrain_epochs: int = 100   # Increased for better pretraining
+    finetune_epochs: int = 300   # Increased for better convergence
+    pretrain_lr: float = 5e-4    # Reduced for more stable training
+    finetune_lr: float = 1e-4    # Reduced for finer tuning
     batch_size: int = 1024
-    weight_decay: float = 0.0
-    patience: int = 20
+    weight_decay: float = 1e-5   # Added L2 regularization
+    patience: int = 30           # Increased patience
     
     # Negative sampling
-    neg_ratio: int = 1
+    neg_ratio: int = 5           # Increased from 1 for harder negative samples
     
     # Logging
     print_every: int = 10
-    eval_every: int = 20
+    eval_every: int = 10         # More frequent evaluation
     
     def to_dict(self) -> Dict:
         return {k: v for k, v in self.__dict__.items()}
@@ -353,7 +354,8 @@ class DrugRepurposingPredictor:
         history = {'loss': [], 'auc': []}
         best_loss = float('inf')
         
-        for epoch in range(n_epochs):
+        pbar = tqdm(range(n_epochs), desc="Pre-training", unit="epoch")
+        for epoch in pbar:
             self.model.train()
             
             # Sample positive edges from full graph
@@ -366,24 +368,37 @@ class DrugRepurposingPredictor:
                 self.G, pos_graph, neg_graph, pretrain_mode=True
             )
             
-            # Binary cross entropy loss
+            # Combined loss: BCE + Margin Ranking Loss for better separation
             pos_labels = torch.ones_like(pos_combined)
             neg_labels = torch.zeros_like(neg_combined)
             
             all_scores = torch.cat([pos_combined, neg_combined])
             all_labels = torch.cat([pos_labels, neg_labels])
             
-            loss = F.binary_cross_entropy_with_logits(all_scores, all_labels)
+            bce_loss = F.binary_cross_entropy_with_logits(all_scores, all_labels)
+            
+            # Margin ranking loss for pairwise comparison
+            if len(pos_combined) > 0 and len(neg_combined) > 0:
+                n_pairs = min(len(pos_combined), len(neg_combined))
+                margin_loss = F.margin_ranking_loss(
+                    pos_combined[:n_pairs],
+                    neg_combined[:n_pairs],
+                    torch.ones(n_pairs, device=self.device),
+                    margin=1.0
+                )
+                loss = bce_loss + 0.5 * margin_loss
+            else:
+                loss = bce_loss
             
             # Backward pass
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             optimizer.step()
             
             history['loss'].append(loss.item())
             
-            # Logging
-            if (epoch + 1) % self.config.print_every == 0:
-                print(f"  Epoch {epoch+1}/{n_epochs} | Loss: {loss.item():.4f}")
+            # Update progress bar
+            pbar.set_postfix({'loss': f'{loss.item():.4f}', 'best': f'{best_loss:.4f}'})
             
             # Save best model
             if loss.item() < best_loss:
@@ -446,8 +461,10 @@ class DrugRepurposingPredictor:
         history = {'train_loss': [], 'valid_loss': []}
         best_valid_loss = float('inf')
         patience_counter = 0
+        last_valid_loss = None
         
-        for epoch in range(n_epochs):
+        pbar = tqdm(range(n_epochs), desc="Fine-tuning", unit="epoch")
+        for epoch in pbar:
             # Training
             self.model.train()
             
@@ -458,15 +475,30 @@ class DrugRepurposingPredictor:
                 self.G, train_graph, neg_graph, pretrain_mode=False
             )
             
+            # Combined loss: BCE + Margin Ranking Loss
             pos_labels = torch.ones_like(pos_combined)
             neg_labels = torch.zeros_like(neg_combined)
             
             all_scores = torch.cat([pos_combined, neg_combined])
             all_labels = torch.cat([pos_labels, neg_labels])
             
-            train_loss = F.binary_cross_entropy_with_logits(all_scores, all_labels)
+            bce_loss = F.binary_cross_entropy_with_logits(all_scores, all_labels)
+            
+            # Margin ranking loss
+            if len(pos_combined) > 0 and len(neg_combined) > 0:
+                n_pairs = min(len(pos_combined), len(neg_combined))
+                margin_loss = F.margin_ranking_loss(
+                    pos_combined[:n_pairs],
+                    neg_combined[:n_pairs],
+                    torch.ones(n_pairs, device=self.device),
+                    margin=1.0
+                )
+                train_loss = bce_loss + 0.5 * margin_loss
+            else:
+                train_loss = bce_loss
             
             train_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             optimizer.step()
             
             history['train_loss'].append(train_loss.item())
@@ -488,10 +520,9 @@ class DrugRepurposingPredictor:
                     
                     valid_loss = F.binary_cross_entropy_with_logits(all_v, labels_v)
                     history['valid_loss'].append(valid_loss.item())
+                    last_valid_loss = valid_loss.item()
                 
                 scheduler.step(valid_loss)
-                
-                print(f"  Epoch {epoch+1}/{n_epochs} | Train: {train_loss.item():.4f} | Valid: {valid_loss.item():.4f}")
                 
                 # Early stopping
                 if valid_loss.item() < best_valid_loss:
@@ -501,8 +532,15 @@ class DrugRepurposingPredictor:
                 else:
                     patience_counter += 1
                     if patience_counter >= self.config.patience:
+                        pbar.close()
                         print(f"\nEarly stopping at epoch {epoch+1}")
                         break
+            
+            # Update progress bar
+            postfix = {'train': f'{train_loss.item():.4f}', 'best_val': f'{best_valid_loss:.4f}'}
+            if last_valid_loss is not None:
+                postfix['val'] = f'{last_valid_loss:.4f}'
+            pbar.set_postfix(postfix)
         
         # Load best model
         if self.best_model_state is not None:
@@ -761,7 +799,7 @@ class DrugRepurposingPredictor:
         if self.data_loader is None or self.G is None:
             raise ValueError("Data not loaded. Call load_data() first.")
         
-        checkpoint = torch.load(path, map_location=self.device)
+        checkpoint = torch.load(path, map_location=self.device, weights_only=False)
         
         self.config = TrainingConfig.from_dict(checkpoint['config'])
         self._initialize_model()

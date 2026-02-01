@@ -622,13 +622,23 @@ class HeteroRGCN(nn.Module):
         
         etypes = list(G.etypes) if G is not None else []
         
-        # GCN layers
+        # GCN layers (3-layer architecture for deeper representations)
         if attention:
             self.layer1 = AttentionHeteroRGCNLayer(in_size, hidden_size, etypes)
-            self.layer2 = AttentionHeteroRGCNLayer(hidden_size, out_size, etypes)
+            self.layer2 = AttentionHeteroRGCNLayer(hidden_size, hidden_size, etypes)
+            self.layer3 = AttentionHeteroRGCNLayer(hidden_size, out_size, etypes)
         else:
             self.layer1 = HeteroRGCNLayer(in_size, hidden_size, etypes)
-            self.layer2 = HeteroRGCNLayer(hidden_size, out_size, etypes)
+            self.layer2 = HeteroRGCNLayer(hidden_size, hidden_size, etypes)
+            self.layer3 = HeteroRGCNLayer(hidden_size, out_size, etypes)
+        
+        # Residual projection if dimensions differ
+        self.residual_proj = None
+        if hidden_size != out_size:
+            self.residual_proj = nn.ModuleDict({
+                ntype: nn.Linear(hidden_size, out_size, bias=False)
+                for ntype in (G.ntypes if G is not None else [])
+            })
         
         # Link predictor
         num_relations = len(G.canonical_etypes) if G is not None else 1
@@ -668,7 +678,7 @@ class HeteroRGCN(nn.Module):
     
     def encode(self, G: Any, return_all_layers: bool = False) -> Dict[str, torch.Tensor]:
         """
-        Encode nodes using GCN layers.
+        Encode nodes using GCN layers with residual connections.
         
         Args:
             G: DGL graph
@@ -683,12 +693,20 @@ class HeteroRGCN(nn.Module):
         h1 = self.layer1(G, h)
         h1 = {k: self.dropout(v) for k, v in h1.items()}
         
-        # Layer 2
+        # Layer 2 with residual connection
         h2 = self.layer2(G, h1)
+        h2 = {k: self.dropout(h2[k]) + h1[k] for k in h2 if k in h1}  # Residual
+        
+        # Layer 3 with residual connection
+        h3 = self.layer3(G, h2)
+        if self.residual_proj is not None:
+            h3 = {k: h3[k] + self.residual_proj[k](h2[k]) for k in h3 if k in h2 and k in self.residual_proj}
+        else:
+            h3 = {k: h3[k] + h2[k] for k in h3 if k in h2}  # Residual
         
         if return_all_layers:
-            return {'layer1': h1, 'layer2': h2}
-        return h2
+            return {'layer1': h1, 'layer2': h2, 'layer3': h3}
+        return h3
     
     def forward(
         self,

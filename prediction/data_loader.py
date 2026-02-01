@@ -390,8 +390,7 @@ class MDKGDataLoader:
         self.G = dgl.heterograph(graph_data, num_nodes_dict=num_nodes_dict)
         
         print(f"  Created graph with {self.G.num_nodes()} nodes and {self.G.num_edges()} edges")
-        print(f"  Node types: {self.G.ntypes}")
-        print(f"  Edge types: {self.G.canonical_etypes}")
+        print(f"  Node types: {len(self.G.ntypes)}, Edge types: {len(self.G.canonical_etypes)}")
         
         return self.G
     
