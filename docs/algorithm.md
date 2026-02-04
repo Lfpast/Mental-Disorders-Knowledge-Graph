@@ -7,6 +7,10 @@
 1. **Graph RAG (图增强检索增强生成)** - 基于 KGARevion 论文
 2. **Link Prediction (药物重定位预测)** - 基于 TxGNN 论文
 
+**参考论文**:
+- KGARevion: https://arxiv.org/abs/2410.04660
+- GraphRAG (From Local to Global): https://arxiv.org/abs/2404.16130
+
 ---
 
 ## 目录
@@ -16,6 +20,9 @@
   - [1.2 核心算法](#12-核心算法)
   - [1.3 实现架构](#13-实现架构)
   - [1.4 工作流程](#14-工作流程)
+  - [1.5 常见问题解答 (FAQ)](#15-常见问题解答-faq)
+  - [1.6 评估方法](#16-评估方法)
+  - [1.7 优化技术：Community Detection](#17-优化技术community-detection)
 - [第二部分：Link Prediction 模块](#第二部分link-prediction-模块)
   - [2.1 论文背景](#21-论文背景)
   - [2.2 核心算法](#22-核心算法)
@@ -51,6 +58,8 @@ KGARevion 提出了一种基于知识图谱的智能体框架，通过以下机�
 
 #### 1.2.1 四动作框架 (Four-Action Framework)
 
+**重要说明**: 论文采用 **True/False 二元分类**，而非置信度分数。
+
 Graph RAG 采用四个核心动作构成的推理循环：
 
 ```
@@ -63,92 +72,87 @@ Graph RAG 采用四个核心动作构成的推理循环：
 │                    ACTION 1: Generate                        │
 │  • 提取医学概念 (疾病、症状、药物、基因等)                      │
 │  • 生成候选三元组 (head, relation, tail)                      │
-│  • 为每个三元组分配初始置信度                                  │
+│  • Choice-Aware: 每个答案选项生成不同三元组                    │
+│  • Non-Choice-Aware: 仅从问题生成三元组                        │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                     ACTION 2: Review                         │
-│  • 与知识图谱进行验证匹配                                      │
-│  • 精确匹配 → 置信度 +0.3                                     │
-│  • 反向匹配 → 置信度 +0.2                                     │
-│  • 实体链接匹配 → 置信度 +0.1                                  │
-│  • 分类: 验证通过 vs 拒绝                                     │
+│  • 步骤1: 检查实体是否可映射到KG（UMLS Code映射）               │
+│  • 步骤2: 使用Fine-tuned LLM判断True/False                    │
+│                                                              │
+│  分类结果:                                                    │
+│  • TRUE:       两实体可映射且LLM判定为True                     │
+│  • FALSE:      两实体可映射但LLM判定为False                    │
+│  • INCOMPLETE: 实体无法映射（保留三元组）                       │
 └─────────────────────────────────────────────────────────────┘
                               │
                 ┌─────────────┴─────────────┐
                 │                           │
                 ▼                           ▼
         ┌───────────┐              ┌────────────────┐
-        │ 验证通过   │              │  拒绝(需修正)   │
+        │ TRUE      │              │  FALSE         │
+        │ (集合V)   │              │  (需修正)      │
         └───────────┘              └────────────────┘
                 │                           │
                 │                           ▼
                 │          ┌─────────────────────────────────────┐
                 │          │          ACTION 3: Revise           │
-                │          │  • 分析拒绝原因                       │
-                │          │  • 修正实体名称为标准术语              │
-                │          │  • 调整关系类型                       │
-                │          │  • 重新提交 Review (最多2轮)          │
+                │          │  • LLM修正head/tail实体或关系         │
+                │          │  • 重新提交Review验证                 │
+                │          │  • 迭代直到True或达最大轮数k          │
                 │          └─────────────────────────────────────┘
                 │                           │
                 ▼                           ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                     ACTION 4: Answer                         │
-│  • 整合所有验证通过的三元组                                    │
+│  • 使用True三元组 (V) + Incomplete三元组                      │
 │  • 结合知识图谱上下文                                         │
 │  • 生成有证据支持的答案                                       │
-│  • 计算整体置信度得分                                         │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-#### 1.2.2 三元组验证算法
+#### 1.2.2 三元组验证算法 (Review Action)
 
-验证过程采用多层次匹配策略：
+**论文实现方法** (Section 3.2):
+
+1. **实体映射**: 使用 UMLS Code 将实体映射到 KG
+2. **LLM验证**: Fine-tuned LLM 输出 True/False
+3. **Soft Constraint Rule**: 处理KG不完整情况
 
 ```python
-def verify_triplet(triplet, knowledge_graph):
+def review_triplet(triplet, knowledge_graph, llm):
     """
-    三元组验证算法
+    三元组验证算法 - 严格遵循KGARevion论文
     
-    匹配层次:
-    1. 精确匹配: (head, relation, tail) 完全一致
-    2. 反向匹配: (tail, reverse_relation, head) 存在
-    3. 部分匹配: 头/尾实体存在于相关三元组中
-    4. 实体链接: 实体在本体库中有映射
+    返回: TripletStatus (TRUE, FALSE, INCOMPLETE)
     """
-    evidence = []
+    # Step 1: 实体映射检查
+    head_mapped = kg.can_map_entity(triplet.head)  # UMLS Code
+    tail_mapped = kg.can_map_entity(triplet.tail)
     
-    # Level 1: 精确匹配
-    if exact_match(triplet, knowledge_graph):
-        evidence.append({"type": "exact_match", "boost": 0.3})
-    
-    # Level 2: 反向匹配
-    if reverse_match(triplet, knowledge_graph):
-        evidence.append({"type": "reverse_match", "boost": 0.2})
-    
-    # Level 3: 实体链接验证
-    if entity_linked(triplet.head) or entity_linked(triplet.tail):
-        evidence.append({"type": "entity_linked", "boost": 0.1})
-    
-    # 置信度更新
-    for e in evidence:
-        triplet.confidence += e["boost"]
-    
-    return len(evidence) > 0, evidence
+    if head_mapped and tail_mapped:
+        # 两实体都可映射 → 使用LLM判定
+        is_true = llm.verify_triplet_completion(triplet)
+        return TripletStatus.TRUE if is_true else TripletStatus.FALSE
+    else:
+        # Soft Constraint: 无法完全映射 → 保留三元组
+        return TripletStatus.INCOMPLETE
 ```
 
-#### 1.2.3 置信度阈值机制
+#### 1.2.3 Embedding对齐机制
+
+论文使用以下方法对齐 KG embedding 与 LLM token embedding:
 
 $$
-\text{Final Confidence} = \begin{cases}
-\text{Accept} & \text{if } C_{updated} \geq \tau \\
-\text{Revise} & \text{if } C_{initial} \times 0.5 < C_{updated} < \tau \\
-\text{Reject} & \text{otherwise}
-\end{cases}
+e_{aligned} = \text{FFN}(\text{Attention}(e_{KG}, E_{LLM}))
 $$
 
-其中 $\tau = 0.6$ 为默认置信度阈值。
+其中:
+- $e_{KG}$: TransE 训练的 KG embedding
+- $E_{LLM}$: LLM token embeddings
+- Attention + FFN: 学习对齐映射
 
 ### 1.3 实现架构
 
@@ -156,17 +160,16 @@ $$
 
 ```
 GraphRAG/
-├── graph_rag.py          # 核心实现
-├── graph_rag_api.py      # REST API 接口
+├── kgarevion_agent.py    # 核心KGARevion实现
 └── graph_rag_demo.py     # 演示脚本
 
 核心类:
-├── MentalDisorderGraphRAG    # 主 RAG Agent
+├── KGARevionAgent            # 主 RAG Agent (KGARevion)
 ├── KnowledgeGraphManager     # 知识图谱管理
+├── CommunityManager          # 社区检测优化
 ├── LLMBackend (Abstract)     # LLM 后端接口
 │   ├── OpenAIBackend         # OpenAI API
-│   ├── OllamaBackend         # 本地 Ollama
-│   └── HuggingFaceBackend    # HuggingFace 模型
+│   └── OllamaBackend         # 本地 Ollama
 └── Triplet / QueryResult     # 数据结构
 ```
 
@@ -245,6 +248,243 @@ result = rag.query(
     ]
 }
 ```
+
+---
+
+### 1.5 常见问题解答 (FAQ)
+
+基于 KGARevion 论文 (https://arxiv.org/abs/2410.04660) 和 GraphRAG 论文 (https://arxiv.org/abs/2404.16130)。
+
+#### Q1: 如何评估 Graph RAG 的性能？使用什么评估指标？
+
+**评估指标**: **Accuracy (准确率) + Standard Deviation (标准差)**
+
+根据 KGARevion 论文 Table 2 和 Section 4.3:
+- 在多个基准数据集上评估: MedQA, MedMCQA, MMLU-Med, PubMedQA
+- 运行 **3次**，报告 **平均准确率 ± 标准差**
+- 数据划分: 100/400/2000 作为 dev/test/train set
+
+$$
+\text{Accuracy} = \frac{\text{正确预测数}}{\text{总样本数}}
+$$
+
+**示例结果格式**: `78.65 ± 0.4%`
+
+#### Q2: Confidence Score 是什么含义？表示什么？
+
+**重要澄清**: **KGARevion 论文不使用 Confidence Score！**
+
+论文采用 **True/False 二元分类**:
+- 使用 fine-tuned LLM 对三元组输出 True 或 False
+- 不是概率或连续置信度
+- LLM 在 KG completion 任务上微调后直接判断
+
+如果需要连续值，可以使用 LLM 输出的 logits 概率，但论文本身只用二元判定。
+
+#### Q3: 初始的 Confidence 是如何确定的？
+
+**论文中不存在"初始 Confidence"概念**。
+
+工作流程:
+1. **Generate**: 生成三元组 (无置信度)
+2. **Review**: 直接通过 LLM 判定 True/False
+3. 不需要初始化置信度
+
+#### Q4: Triplets 是如何与 KG 进行 Matching 的？
+
+**两步匹配策略** (Section 3.2.1-3.2.2):
+
+**Step 1 - 实体映射 (Entity Mapping)**:
+```
+三元组实体 → UMLS Code → KG 实体
+```
+- 使用 UMLS 标准医学术语作为桥接
+- 若实体无法映射 → `INCOMPLETE` 状态 (保留三元组)
+
+**Step 2 - LLM 验证 (Triplet Verification)**:
+- 获取关系描述 D(r)
+- 使用 fine-tuned LLM (LoRA + TransE embeddings)
+- 输出 True 或 False
+
+**Embedding 对齐**:
+$$
+e_{aligned} = \text{FFN}(\text{Attention}(e_{TransE}, E_{LLM}))
+$$
+
+#### Q5: Match 有哪些类型？
+
+**只有两种概念类型**:
+
+| 类型 | 条件 | 结果 |
+|------|------|------|
+| **Entity Mapping** | 实体是否可映射到 KG (via UMLS) | Mappable / Not Mappable |
+| **Triplet Classification** | LLM 判定三元组正确性 | True / False |
+
+**三元组最终状态**:
+- `TRUE`: 实体可映射 + LLM 判定 True
+- `FALSE`: 实体可映射 + LLM 判定 False (需要 Revise)
+- `INCOMPLETE`: 实体无法映射 (保留使用)
+
+#### Q6: Revise Action 是如何实现的？
+
+**论文 Section 3.3 和 Appendix E.3**:
+
+**核心思路**: 让 LLM 修正被判定为 False 的三元组
+
+```
+Prompt 模板 (Appendix E.3):
+### Instruction:
+Given the following triplets consisting of a head entity, relation, and tail entity, 
+please review and revise the triplets to ensure they are correct and helpful for 
+answering the given question...
+
+### Input:
+Triplets: [(head1, rel1, tail1), ...]
+Questions: {query}
+
+### Response:
+```
+
+**迭代过程**:
+1. 收集 False 三元组 (F 集合)
+2. 提交给 LLM 修正
+3. 对修正后的三元组重新 Review
+4. 重复直到 True 或达到最大轮数 k (默认 k=2)
+
+#### Q7: KGARevion 论文还有什么创新点？
+
+1. **Structural-Semantic Embedding Alignment**
+   - TransE 学习 KG 结构 embeddings
+   - Attention + FFN 对齐到 LLM token embeddings
+   - 支持 LoRA fine-tuning
+
+2. **Question-Type Adaptive Strategy**
+   - Choice-Aware: 对每个答案选项生成不同三元组
+   - Non-Choice-Aware: 仅从问题生成 (Yes/No 类型)
+
+3. **KG as Verifier (not Retriever)**
+   - 不是从 KG 检索答案
+   - 而是用 KG 验证 LLM 生成的知识
+   - 解决幻觉问题
+
+4. **Soft Constraint Rule**
+   - 处理 KG 不完整情况
+   - 无法映射的实体 → 保留三元组
+
+#### Q8: 如何用 Community Detection 优化 Graph RAG？
+
+**参考 GraphRAG 论文** (https://arxiv.org/abs/2404.16130):
+
+**Leiden Algorithm** 用于层次化社区检测:
+
+```
+优化前复杂度: O(|Q| × |KG|)   # 全 KG 搜索
+优化后复杂度: O(|Q| × |C|)    # 仅搜索相关社区
+```
+
+**实现步骤**:
+
+1. **构建图结构**:
+```python
+G = nx.Graph()
+for triplet in triplets:
+    G.add_edge(triplet.head, triplet.tail, relation=triplet.relation)
+```
+
+2. **Leiden 社区检测**:
+```python
+from graspologic.partition import leiden
+partition = leiden(G, resolution=1.0)
+# 或使用 Louvain 作为替代
+```
+
+3. **社区范围搜索**:
+```python
+def find_triplets_optimized(query_entities):
+    # 找到 query 实体所属的社区
+    relevant_communities = get_communities_for_entities(query_entities)
+    # 仅搜索这些社区内的三元组
+    return search_within_communities(relevant_communities)
+```
+
+4. **层次化总结** (可选):
+   - Community Level 0: 最细粒度
+   - Community Level 1: 合并相似社区
+   - Map-Reduce: 自底向上汇总
+
+---
+
+### 1.6 评估方法
+
+#### 1.6.1 评估模块设计
+
+参见 `GraphRAG/kgarevion_agent.py`
+
+```python
+@dataclass
+class EvaluationResult:
+    question: str
+    predicted_answer: str
+    ground_truth: str
+    is_correct: bool
+    true_triplets_count: int
+    false_triplets_count: int
+    incomplete_triplets_count: int
+    
+@dataclass
+class EvaluationMetrics:
+    accuracy: float
+    std_deviation: float
+    total_samples: int
+    runs: int  # 通常为3
+```
+
+#### 1.6.2 多次运行评估
+
+根据 KGARevion 论文 Table 2：运行 3 次，报告平均准确率 ± 标准差
+
+```python
+def evaluate_with_std(agent, dataset, runs=3):
+    accuracies = []
+    for _ in range(runs):
+        acc = evaluate_single_run(agent, dataset)
+        accuracies.append(acc)
+    
+    return {
+        "accuracy": np.mean(accuracies),
+        "std": np.std(accuracies),
+        "runs": runs
+    }
+```
+
+---
+
+### 1.7 优化技术：Community Detection
+
+#### 1.7.1 Leiden 算法原理
+
+```
+Input:  Graph G = (V, E)
+Output: Community partition
+
+1. Local Moving Phase:
+   - 将每个节点移动到最大化模块度的社区
+   
+2. Refinement Phase:
+   - 对社区进行细化调整
+   
+3. Aggregation Phase:
+   - 将社区聚合成超节点
+   - 递归重复直到收敛
+```
+
+#### 1.7.2 实现位置
+
+- 核心实现: `GraphRAG/kgarevion_agent.py` → `CommunityManager` 类
+- 功能:
+  - `build_graph_from_triplets()`: 构建 NetworkX 图
+  - `detect_communities()`: Leiden/Louvain 社区检测
+  - `find_triplets_in_communities()`: 社区范围三元组搜索
 
 ---
 
@@ -617,23 +857,28 @@ drugs = predictor.predict_drugs_for_disease("depression")
 
 1. **KGARevion**: Jin, H., et al. (2024). "Knowledge Graph Based Agent for Complex, Knowledge-Intensive QA in Medicine." *arXiv:2410.04660*
 
-2. **TxGNN**: Huang, K., et al. (2024). "Zero-shot prediction of therapeutic use of drugs with geometric deep learning and clinician centered design." *Nature Medicine*.
+2. **GraphRAG**: Edge, D., et al. (2024). "From Local to Global: A Graph RAG Approach to Query-Focused Summarization." *arXiv:2404.16130*
 
-3. **DistMult**: Yang, B., et al. (2015). "Embedding Entities and Relations for Learning and Inference in Knowledge Bases." *ICLR*.
+3. **TxGNN**: Huang, K., et al. (2024). "Zero-shot prediction of therapeutic use of drugs with geometric deep learning and clinician centered design." *Nature Medicine*.
 
-4. **RGCN**: Schlichtkrull, M., et al. (2018). "Modeling Relational Data with Graph Convolutional Networks." *ESWC*.
+4. **DistMult**: Yang, B., et al. (2015). "Embedding Entities and Relations for Learning and Inference in Knowledge Bases." *ICLR*.
+
+5. **RGCN**: Schlichtkrull, M., et al. (2018). "Modeling Relational Data with Graph Convolutional Networks." *ESWC*.
+
+6. **Leiden Algorithm**: Traag, V., et al. (2019). "From Louvain to Leiden: guaranteeing well-connected communities." *Scientific Reports*.
 
 ---
 
 ## 🔗 相关链接
 
-- Graph RAG 论文: https://arxiv.org/abs/2410.04660
+- KGARevion 论文: https://arxiv.org/abs/2410.04660
+- GraphRAG 论文: https://arxiv.org/abs/2404.16130
 - TxGNN 论文: https://www.nature.com/articles/s41591-024-03233-x
 - DGL 文档: https://docs.dgl.ai/
 - PyTorch 文档: https://pytorch.org/docs/
 
 ---
 
-*文档版本: 1.0*  
-*最后更新: 2026-01-30*  
+*文档版本: 2.0 (Updated with KGARevion paper compliance)*  
+*最后更新: 2025-02*  
 *MDKG Project*

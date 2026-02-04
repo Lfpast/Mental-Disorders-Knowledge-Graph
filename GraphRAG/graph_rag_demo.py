@@ -2,8 +2,10 @@
 """
 Graph RAG Demo Script for Mental Disorder Knowledge Graph
 
-This script demonstrates the Graph RAG functionality for answering
+This script demonstrates the KGARevion-style Graph RAG functionality for answering
 mental health related questions using the MDKG knowledge graph.
+
+Based on KGARevion paper: https://arxiv.org/abs/2410.04660
 
 Usage:
     python graph_rag_demo.py --interactive
@@ -20,7 +22,7 @@ from typing import Optional
 # Add project root to path (parent directory of GraphRAG folder)
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from graph_rag import create_graph_rag, MentalDisorderGraphRAG, QueryResult
+from kgarevion_agent import create_kgarevion_agent, KGARevionAgent, QueryResult
 
 
 # Sample questions for demonstration
@@ -40,7 +42,7 @@ def print_banner():
     """Print a welcome banner"""
     print("\n" + "="*70)
     print("   Mental Disorder Knowledge Graph - Graph RAG Demo")
-    print("   Powered by KGARevion-style Knowledge Graph Agent")
+    print("   Powered by KGARevion (arxiv.org/abs/2410.04660)")
     print("="*70 + "\n")
 
 
@@ -51,18 +53,26 @@ def print_result(result: QueryResult, verbose: bool = False):
     print("-"*60)
     print(result.answer)
     print("-"*60)
-    print(f"📊 Confidence: {result.confidence:.2%}")
+    
+    # Count triplets for summary
+    true_count = len(result.true_triplets)
+    false_count = len(result.false_triplets)
+    incomplete_count = len(result.incomplete_triplets)
+    
+    print(f"📊 Triplet Statistics: ✅ {true_count} TRUE | ❌ {false_count} FALSE | ❓ {incomplete_count} INCOMPLETE")
     
     if verbose:
-        print(f"\n🔬 Medical Concepts Identified: {', '.join(result.medical_concepts) if result.medical_concepts else 'None'}")
-        print(f"✅ Verified Triplets: {len(result.verified_triplets)}")
-        print(f"❌ Rejected Triplets: {len(result.rejected_triplets)}")
-        print(f"🔄 Revised Triplets: {len(result.revised_triplets)}")
+        print(f"\n🔬 Medical Concepts: {', '.join(result.medical_concepts) if result.medical_concepts else 'None'}")
         
-        if result.verified_triplets:
-            print("\n📝 Verified Knowledge Triplets:")
-            for t in result.verified_triplets[:5]:
-                print(f"   • ({t.head}) --[{t.relation}]--> ({t.tail}) [conf: {t.confidence:.2f}]")
+        if result.true_triplets:
+            print("\n📝 Verified TRUE Triplets:")
+            for t in result.true_triplets[:5]:
+                print(f"   ✅ ({t.head_entity}) --[{t.relation}]--> ({t.tail_entity})")
+        
+        if result.false_triplets:
+            print("\n📝 FALSE Triplets (revised):")
+            for t in result.false_triplets[:3]:
+                print(f"   ❌ ({t.head_entity}) --[{t.relation}]--> ({t.tail_entity})")
         
         if result.reasoning_trace:
             print("\n🧠 Reasoning Trace:")
@@ -72,7 +82,7 @@ def print_result(result: QueryResult, verbose: bool = False):
     print()
 
 
-def run_interactive_mode(rag: MentalDisorderGraphRAG, verbose: bool = False):
+def run_interactive_mode(rag: KGARevionAgent, verbose: bool = False):
     """Run interactive Q&A session"""
     print("\n💬 Interactive Mode - Ask questions about mental health")
     print("   Type 'quit' or 'exit' to stop, 'help' for sample questions\n")
@@ -108,7 +118,7 @@ def run_interactive_mode(rag: MentalDisorderGraphRAG, verbose: bool = False):
                 print("   Invalid number. Type 'help' for sample questions.")
                 continue
         
-        print("\n⏳ Processing your query...\n")
+        print("\n⏳ Processing with KGARevion pipeline...\n")
         
         try:
             result = rag.query(question, verbose=verbose)
@@ -117,7 +127,7 @@ def run_interactive_mode(rag: MentalDisorderGraphRAG, verbose: bool = False):
             print(f"\n❌ Error processing query: {e}\n")
 
 
-def run_demo_mode(rag: MentalDisorderGraphRAG, num_questions: int = 3, verbose: bool = False):
+def run_demo_mode(rag: KGARevionAgent, num_questions: int = 3, verbose: bool = False):
     """Run a demonstration with sample questions"""
     print("\n🎯 Demo Mode - Processing sample questions...\n")
     
@@ -137,11 +147,11 @@ def run_demo_mode(rag: MentalDisorderGraphRAG, num_questions: int = 3, verbose: 
             print("\n" + "·"*60 + "\n")
 
 
-def run_single_query(rag: MentalDisorderGraphRAG, query: str, verbose: bool = False, 
+def run_single_query(rag: KGARevionAgent, query: str, verbose: bool = False, 
                      output_file: Optional[str] = None):
     """Run a single query"""
     print(f"\n📌 Query: \"{query}\"")
-    print("⏳ Processing...\n")
+    print("⏳ Processing with KGARevion pipeline...\n")
     
     result = rag.query(query, verbose=verbose)
     print_result(result, verbose=verbose)
@@ -151,10 +161,10 @@ def run_single_query(rag: MentalDisorderGraphRAG, query: str, verbose: bool = Fa
         output_data = {
             "query": result.query,
             "answer": result.answer,
-            "confidence": result.confidence,
             "medical_concepts": result.medical_concepts,
-            "verified_triplets": [t.to_dict() for t in result.verified_triplets],
-            "rejected_triplets": [t.to_dict() for t in result.rejected_triplets],
+            "true_triplets": [t.to_dict() for t in result.true_triplets],
+            "false_triplets": [t.to_dict() for t in result.false_triplets],
+            "incomplete_triplets": [t.to_dict() for t in result.incomplete_triplets],
             "revised_triplets": [t.to_dict() for t in result.revised_triplets],
             "reasoning_trace": result.reasoning_trace
         }
@@ -167,7 +177,7 @@ def run_single_query(rag: MentalDisorderGraphRAG, query: str, verbose: bool = Fa
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Mental Disorder Graph RAG Demo",
+        description="Mental Disorder Graph RAG Demo (KGARevion)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -189,7 +199,7 @@ Examples:
     
     # LLM configuration
     parser.add_argument("--llm", type=str, default="openai",
-                       choices=["openai", "ollama", "huggingface"],
+                       choices=["openai", "ollama"],
                        help="LLM backend to use (default: openai)")
     parser.add_argument("--model", type=str, default="gpt-4",
                        help="Model name (default: gpt-4)")
@@ -197,6 +207,10 @@ Examples:
                        help="API key for OpenAI (or set OPENAI_API_KEY env)")
     parser.add_argument("--ollama-url", type=str, default="http://localhost:11434",
                        help="Ollama server URL")
+    
+    # Community Detection
+    parser.add_argument("--no-community", action="store_true",
+                       help="Disable community detection optimization")
     
     # Output options
     parser.add_argument("--verbose", "-v", action="store_true",
@@ -223,21 +237,23 @@ Examples:
         sys.exit(1)
     
     # Initialize Graph RAG
-    print("🔧 Initializing Graph RAG system...")
+    print("🔧 Initializing KGARevion Agent...")
     print(f"   LLM Backend: {args.llm}")
     print(f"   Model: {args.model}")
+    print(f"   Community Detection: {'Disabled' if args.no_community else 'Enabled (Leiden/Louvain)'}")
     
     try:
-        rag = create_graph_rag(
+        rag = create_kgarevion_agent(
             config_path=args.config,
             llm_type=args.llm,
             llm_model=args.model,
             api_key=args.api_key,
+            use_community_detection=not args.no_community,
             ollama_url=args.ollama_url
         )
-        print("✅ Graph RAG system initialized successfully!\n")
+        print("✅ KGARevion Agent initialized successfully!\n")
     except Exception as e:
-        print(f"❌ Failed to initialize Graph RAG: {e}")
+        print(f"❌ Failed to initialize KGARevion Agent: {e}")
         sys.exit(1)
     
     # Run selected mode

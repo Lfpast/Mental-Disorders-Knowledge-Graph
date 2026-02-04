@@ -32,13 +32,13 @@ MDKG/
 │   ├── predictor.py           # Main DrugRepurposingPredictor class
 │   ├── evaluator.py           # Evaluation metrics (MRR, Hits@K, etc.)
 │   └── demo.py                # Interactive demonstration script
+├── GraphRAG/                  # Graph RAG Module (KGARevion-based)
+│   ├── kgarevion_agent.py     # Core KGARevion implementation
+│   └── graph_rag_demo.py      # Interactive demo script
 ├── shell/                     # Automation scripts for all pipelines
 ├── active_learning.py         # Main script for Active Learning sample selection
 ├── entity_linking.py          # Main script for Entity Linking
 ├── extract_entities.py        # Entity extraction utility
-├── graph_rag.py               # Graph RAG core module
-├── graph_rag_demo.py          # Graph RAG interactive demo
-├── graph_rag_api.py           # Graph RAG REST API server
 ├── requirements.txt           # Required libraries
 └── triplets_refine_prompt.py  # Triplet extraction and prompt generation
 ```
@@ -211,7 +211,7 @@ python entity_linking.py
 
 ### Stage 6: Graph RAG for Mental Health Q&A (NEW)
 
-This stage enables **Knowledge Graph-enhanced Retrieval-Augmented Generation (Graph RAG)** for answering mental health questions. The implementation is inspired by the [KGARevion paper](https://arxiv.org/abs/2410.04660).
+This stage enables **Knowledge Graph-enhanced Retrieval-Augmented Generation (Graph RAG)** for answering mental health questions. The implementation strictly follows the [KGARevion paper](https://arxiv.org/abs/2410.04660).
 
 **Input**: Entity Linking Results, Extracted Triplets, LLM API  
 **Output**: Accurate, knowledge-grounded answers to mental health questions
@@ -221,19 +221,21 @@ This stage enables **Knowledge Graph-enhanced Retrieval-Augmented Generation (Gr
 The system operates through four key actions (following KGARevion design):
 
 1. **Generate**: Extract medical concepts from the query and generate relevant knowledge triplets using the LLM
-2. **Review**: Verify generated triplets against the MDKG knowledge graph
-3. **Revise**: Iteratively correct rejected triplets to improve coverage
+2. **Review**: Verify generated triplets against the MDKG knowledge graph (True/False/Incomplete classification)
+3. **Revise**: Iteratively correct rejected triplets (up to k rounds, default k=2)
 4. **Answer**: Generate the final answer based on verified, grounded knowledge
+
+**Key Features**:
+- **True/False Binary Classification**: Following paper specification, not confidence scores
+- **Soft Constraint Rule**: Handles incomplete KG by keeping unmappable triplets
+- **Community Detection** (Optional): Leiden/Louvain algorithm for efficient triplet search
 
 ```
 ┌─────────────┐    ┌──────────────┐    ┌─────────────┐    ┌──────────────┐
 │   Generate  │ -> │    Review    │ -> │   Revise    │ -> │    Answer    │
-│  (Triplets) │    │  (Verify KG) │    │  (Correct)  │    │  (Response)  │
+│  (Triplets) │    │(TRUE/FALSE/  │    │  (Correct)  │    │  (Response)  │
+│             │    │ INCOMPLETE)  │    │             │    │              │
 └─────────────┘    └──────────────┘    └─────────────┘    └──────────────┘
-      │                   │                   │                  │
-      v                   v                   v                  v
-   LLM extracts      Check against      Fix rejected       Generate final
-   medical concepts  MDKG triplets      triplets           answer with KG
 ```
 
 #### Method 1: Shell Script
@@ -244,8 +246,8 @@ bash shell/graph_rag.sh -i
 # Demo mode with sample questions
 bash shell/graph_rag.sh -d -v
 
-# Single query
-bash shell/graph_rag.sh -q "What are the symptoms of depression?"
+# Single query with community detection
+bash shell/graph_rag.sh -q "What are the symptoms of depression?" -c
 
 # Use local Ollama instead of OpenAI
 bash shell/graph_rag.sh --llm ollama --model llama3 -i
@@ -254,52 +256,48 @@ bash shell/graph_rag.sh --llm ollama --model llama3 -i
 #### Method 2: Python Script
 ```bash
 # Interactive mode
-python graph_rag_demo.py --interactive
+python GraphRAG/graph_rag_demo.py --interactive
 
-# Demo mode
-python graph_rag_demo.py --demo --verbose
+# Demo mode with verbose output
+python GraphRAG/graph_rag_demo.py --demo --verbose
 
 # Single query with OpenAI
 export OPENAI_API_KEY="your-api-key"
-python graph_rag_demo.py -q "How does lithium treat bipolar disorder?"
+python GraphRAG/graph_rag_demo.py -q "How does lithium treat bipolar disorder?"
 
-# Use Ollama (local LLM)
-python graph_rag_demo.py --llm ollama --model llama3 -i
+# With community detection optimization
+python GraphRAG/graph_rag_demo.py --community -i
 ```
 
 #### Method 3: Python API
 ```python
-from graph_rag import create_graph_rag
+from GraphRAG.kgarevion_agent import KGARevionAgent, KnowledgeGraphManager
+from GraphRAG.kgarevion_agent import OpenAIBackend, OllamaBackend
 
-# Initialize with OpenAI
-rag = create_graph_rag(
-    llm_type="openai",
-    llm_model="gpt-4",
-    api_key="your-api-key"
-)
+# Initialize LLM backend
+llm = OpenAIBackend(api_key="your-api-key", model="gpt-4")
+# Or use local Ollama:
+# llm = OllamaBackend(model="llama3")
 
-# Or with local Ollama
-rag = create_graph_rag(
-    llm_type="ollama",
-    llm_model="llama3"
+# Initialize Knowledge Graph Manager
+config = {
+    'entity_linking_path': 'models/InputsAndOutputs/output/entity_linking_results.json',
+    'predictions_path': 'models/InputsAndOutputs/output/sampling_json_run_v1_sampled.json'
+}
+kg_manager = KnowledgeGraphManager(config)
+
+# Create KGARevion Agent
+agent = KGARevionAgent(
+    kg_manager=kg_manager,
+    llm_backend=llm,
+    use_community_detection=True  # Enable Leiden/Louvain optimization
 )
 
 # Query
-result = rag.query("What are the risk factors for schizophrenia?")
+result = agent.query("What are the risk factors for schizophrenia?")
 print(result.answer)
-print(f"Confidence: {result.confidence:.2%}")
-print(f"Verified triplets: {len(result.verified_triplets)}")
-```
-
-#### Method 4: REST API Server
-```bash
-# Start the API server
-python graph_rag_api.py --port 8000
-
-# Query via curl
-curl -X POST http://localhost:8000/query \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What are symptoms of anxiety disorder?"}'
+print(f"True triplets: {len([t for t in result.verified_triplets if t.status.value == 'true'])}")
+print(f"Incomplete triplets: {len([t for t in result.verified_triplets if t.status.value == 'incomplete'])}")
 ```
 
 #### Supported LLM Backends
@@ -308,7 +306,6 @@ curl -X POST http://localhost:8000/query \
 |---------|-------------|-------|
 | OpenAI | GPT-4, GPT-3.5-turbo | Set `OPENAI_API_KEY` env variable |
 | Ollama | Local LLMs (Llama3, Mistral) | Install [Ollama](https://ollama.ai) and run `ollama pull llama3` |
-| HuggingFace | Local transformers models | Requires GPU with sufficient VRAM |
 
 ---
 
