@@ -322,39 +322,63 @@ The system implements a Graph Neural Network (GNN) approach with metric learning
 - **Explainability**: GNNExplainer identifies important edges/pathways for predictions
 - **Scalability**: Mini-batch training with neighbor sampling for large KGs
 
+#### Configuration
+
+All model paths, data sources, hyperparameters, and dimensions are managed through a single config file:
+
+```
+models/InputsAndOutputs/configs/prediction_config.json
+```
+
+Key config fields:
+| Field | Description | Example |
+|-------|-------------|---------|
+| `paths.model_file` | Model checkpoint file | `"model.pt"` |
+| `paths.data_folder` | Data root directory | `"models/InputsAndOutputs"` |
+| `paths.output_dir` | Output directory | `"models/InputsAndOutputs/output/prediction"` |
+| `data.data_source` | Triplet source | `"sampled"`, `"full"`, `"full_aug"`, `"train"` |
+| `model.n_hid` | Hidden dimension | `256` |
+| `model.proto_num` | Prototype count | `5` |
+| `training.pretrain_epochs` | Pre-training epochs | `100` |
+| `training.finetune_epochs` | Fine-tuning epochs | `200` |
+
+To change the data source or model file, simply edit `prediction_config.json` — no CLI flags needed.
+
 #### Method 1: Shell Script
 ```bash
 # General Syntax
-# bash shell/prediction.sh [--data-source SOURCE] [--model-file MODEL] <command> [options]
-# SOURCE options: sampled (default), full, full_aug, train
+# bash shell/prediction.sh [--config CONFIG_FILE] <command> [options]
 
-# Train the model (specify model output path indirectly or rename later)
+# Train the model (settings from prediction_config.json)
 bash shell/prediction.sh train
-bash shell/prediction.sh --data-source full train
 
 # Predict new indications for a drug
 bash shell/prediction.sh predict quetiapine
-bash shell/prediction.sh --data-source full --model-file "models/output/prediction/model_full.pt" predict quetiapine
 
 # Predict treatments for a disease
 bash shell/prediction.sh treatments depression
-bash shell/prediction.sh --data-source full --model-file "../model.pt" treatments "major depressive disorder"
+bash shell/prediction.sh treatments "major depressive disorder"
 
 # Explain a specific prediction
 bash shell/prediction.sh explain metformin diabetes
-bash shell/prediction.sh --data-source full --model-file "model.pt" explain metformin diabetes
+
+# Use a custom config file
+bash shell/prediction.sh --config path/to/my_config.json train
 ```
 
 #### Method 2: Python Script
 ```bash
-# Interactive demo (default)
+# Interactive demo (default config)
 python -m prediction.demo
 
 # Train model
-python -m prediction.demo --train --data-source full --pretrain-epochs 100
+python -m prediction.demo --config models/InputsAndOutputs/configs/prediction_config.json --train
 
-# Predict with specific model file
-python -m prediction.demo --predict aripiprazole --data-source full --model-path "./my_model.pt"
+# Predict with default config
+python -m prediction.demo --predict aripiprazole
+
+# Override epochs from CLI (config values used otherwise)
+python -m prediction.demo --train --pretrain-epochs 50 --finetune-epochs 100
 ```
 
 #### GNNExplainer Details

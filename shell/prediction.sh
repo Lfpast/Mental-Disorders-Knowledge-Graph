@@ -46,16 +46,8 @@ PREDICTION_DIR="$PROJECT_ROOT/prediction"
 DATA_DIR="$PROJECT_ROOT/models/InputsAndOutputs"
 OUTPUT_DIR="$DATA_DIR/output/prediction"
 
-# Training configuration (aligned with TxGNN paper)
-PRETRAIN_EPOCHS=100
-FINETUNE_EPOCHS=300
-HIDDEN_DIM=256
-LEARNING_RATE=0.0001
-BATCH_SIZE=1024
-PROTO_NUM=5
-EXP_LAMBDA=0.7
-
-# Quick mode settings
+# Training configuration (CLI overrides for quick mode only;
+# all other settings come from prediction_config.json)
 QUICK_PRETRAIN_EPOCHS=5
 QUICK_FINETUNE_EPOCHS=20
 
@@ -64,10 +56,8 @@ EXPLAINER_EPOCHS=100
 EXPLAINER_LR=0.01
 NUM_HOPS=2
 
-# Data source (can be overridden with --data-source)
-# Options: sampled, full, full_aug, train
-DATA_SOURCE="sampled"
-MODEL_FILE=""
+# Config file path (edit this file to change data source, model path, etc.)
+CONFIG_FILE="$DATA_DIR/configs/prediction_config.json"
 
 # ==============================================================================
 # Helper Functions
@@ -127,7 +117,15 @@ check_dependencies() {
 check_data() {
     print_step "Checking MDKG data..."
     
-    TRIPLETS_FILE="$DATA_DIR/output/sampling_json_run_v1_sampled.json"
+    # Read triplets path from config
+    TRIPLETS_FILE=$(python3 -c "
+import json
+cfg = json.load(open('$CONFIG_FILE'))
+paths = cfg.get('paths', {})
+data_folder = paths.get('data_folder', './models/InputsAndOutputs')
+triplets = paths.get('triplets_file', 'output/sampling_json_run_v1_sampled.json')
+print(f'{data_folder}/{triplets}')
+" 2>/dev/null || echo "$DATA_DIR/output/sampling_json_run_v1_sampled.json")
     
     if [ ! -f "$TRIPLETS_FILE" ]; then
         echo "Error: Triplets file not found: $TRIPLETS_FILE"
@@ -153,39 +151,32 @@ check_data() {
 
 ##
 # Train the drug repurposing model
-# @param ... Training arguments (pretrain-epochs, finetune-epochs, etc.)
+# All settings come from prediction_config.json
+# @param ... Optional training overrides (--quick, --skip-pretrain, etc.)
 ##
 train_model() {
     print_header "Training Drug Repurposing Model"
     
-    local PRETRAIN=$PRETRAIN_EPOCHS
-    local FINETUNE=$FINETUNE_EPOCHS
     local SKIP_PRETRAIN=""
-    local LOCAL_DATA_SOURCE="$DATA_SOURCE"
+    local EXTRA_ARGS=""
     
     # Parse arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
             --quick)
-                PRETRAIN=$QUICK_PRETRAIN_EPOCHS
-                FINETUNE=$QUICK_FINETUNE_EPOCHS
-                SKIP_PRETRAIN="--skip-pretrain"
+                EXTRA_ARGS="$EXTRA_ARGS --pretrain-epochs $QUICK_PRETRAIN_EPOCHS --finetune-epochs $QUICK_FINETUNE_EPOCHS --skip-pretrain"
                 shift
                 ;;
             --skip-pretrain)
-                SKIP_PRETRAIN="--skip-pretrain"
+                EXTRA_ARGS="$EXTRA_ARGS --skip-pretrain"
                 shift
                 ;;
             --pretrain-epochs)
-                PRETRAIN=$2
+                EXTRA_ARGS="$EXTRA_ARGS --pretrain-epochs $2"
                 shift 2
                 ;;
             --finetune-epochs)
-                FINETUNE=$2
-                shift 2
-                ;;
-            --data-source)
-                LOCAL_DATA_SOURCE=$2
+                EXTRA_ARGS="$EXTRA_ARGS --finetune-epochs $2"
                 shift 2
                 ;;
             *)
@@ -194,33 +185,19 @@ train_model() {
         esac
     done
     
-    print_step "Data source: $LOCAL_DATA_SOURCE"
-    print_step "Pre-training epochs: $PRETRAIN"
-    print_step "Fine-tuning epochs: $FINETUNE"
+    print_step "Config: $CONFIG_FILE"
     
     # Create output directory
     mkdir -p "$OUTPUT_DIR"
     
     cd "$PROJECT_ROOT"
     
-    # Construct base command
-    CMD="python3 -m prediction.demo \
+    eval python3 -m prediction.demo \
+        --config \"$CONFIG_FILE\" \
         --train \
-        --data-folder \"$DATA_DIR\" \
-        --output-dir \"$OUTPUT_DIR\" \
-        --pretrain-epochs $PRETRAIN \
-        --finetune-epochs $FINETUNE \
-        --data-source \"$LOCAL_DATA_SOURCE\" \
-        $SKIP_PRETRAIN"
-        
-    # Add model file arg if provided (though mostly used for loading, good for consistency)
-    if [ ! -z "$MODEL_FILE" ]; then
-        CMD="$CMD --model-path \"$MODEL_FILE\""
-    fi
+        $EXTRA_ARGS
     
-    eval $CMD
-    
-    print_step "Model saved to: $OUTPUT_DIR/model.pt"
+    print_step "Training complete."
 }
 
 # ==============================================================================
@@ -244,16 +221,9 @@ predict_drug() {
     
     cd "$PROJECT_ROOT"
     
-    CMD="python3 -m prediction.demo \
-        --predict \"$DRUG_NAME\" \
-        --data-folder \"$DATA_DIR\" \
-        --data-source \"$DATA_SOURCE\""
-        
-    if [ ! -z "$MODEL_FILE" ]; then
-        CMD="$CMD --model-path \"$MODEL_FILE\""
-    fi
-    
-    eval $CMD
+    python3 -m prediction.demo \
+        --config "$CONFIG_FILE" \
+        --predict "$DRUG_NAME"
 }
 
 ##
@@ -273,16 +243,9 @@ predict_disease() {
     
     cd "$PROJECT_ROOT"
     
-    CMD="python3 -m prediction.demo \
-        --treatments \"$DISEASE_NAME\" \
-        --data-folder \"$DATA_DIR\" \
-        --data-source \"$DATA_SOURCE\""
-        
-    if [ ! -z "$MODEL_FILE" ]; then
-        CMD="$CMD --model-path \"$MODEL_FILE\""
-    fi
-    
-    eval $CMD
+    python3 -m prediction.demo \
+        --config "$CONFIG_FILE" \
+        --treatments "$DISEASE_NAME"
 }
 
 # ==============================================================================
@@ -308,16 +271,9 @@ explain_prediction() {
     
     cd "$PROJECT_ROOT"
     
-    CMD="python3 -m prediction.demo \
-        --explain \"$DRUG_NAME\" \"$DISEASE_NAME\" \
-        --data-folder \"$DATA_DIR\" \
-        --data-source \"$DATA_SOURCE\""
-        
-    if [ ! -z "$MODEL_FILE" ]; then
-        CMD="$CMD --model-path \"$MODEL_FILE\""
-    fi
-    
-    eval $CMD
+    python3 -m prediction.demo \
+        --config "$CONFIG_FILE" \
+        --explain "$DRUG_NAME" "$DISEASE_NAME"
 }
 
 ##
@@ -339,16 +295,9 @@ explain_batch() {
     
     cd "$PROJECT_ROOT"
     
-    CMD="python3 -m prediction.demo \
-        --explain-batch \"$INPUT_FILE\" \"$OUTPUT_FILE\" \
-        --data-folder \"$DATA_DIR\" \
-        --data-source \"$DATA_SOURCE\""
-
-    if [ ! -z "$MODEL_FILE" ]; then
-        CMD="$CMD --model-path \"$MODEL_FILE\""
-    fi
-    
-    eval $CMD
+    python3 -m prediction.demo \
+        --config "$CONFIG_FILE" \
+        --explain-batch "$INPUT_FILE" "$OUTPUT_FILE"
 }
 
 # ==============================================================================
@@ -363,16 +312,9 @@ evaluate_model() {
     
     cd "$PROJECT_ROOT"
     
-    CMD="python3 -m prediction.demo \
-        --evaluate \
-        --data-folder \"$DATA_DIR\" \
-        --data-source \"$DATA_SOURCE\""
-
-    if [ ! -z "$MODEL_FILE" ]; then
-        CMD="$CMD --model-path \"$MODEL_FILE\""
-    fi
-    
-    eval $CMD
+    python3 -m prediction.demo \
+        --config "$CONFIG_FILE" \
+        --evaluate
     
     print_step "Evaluation results saved to: $OUTPUT_DIR/evaluation_results.json"
 }
@@ -389,16 +331,9 @@ run_demo() {
     
     cd "$PROJECT_ROOT"
     
-    CMD="python3 -m prediction.demo \
-        --demo \
-        --data-folder \"$DATA_DIR\" \
-        --data-source \"$DATA_SOURCE\""
-        
-    if [ ! -z "$MODEL_FILE" ]; then
-        CMD="$CMD --model-path \"$MODEL_FILE\""
-    fi
-    
-    eval $CMD
+    python3 -m prediction.demo \
+        --config "$CONFIG_FILE" \
+        --demo
 }
 
 ##
@@ -409,16 +344,9 @@ run_interactive() {
     
     cd "$PROJECT_ROOT"
     
-    CMD="python3 -m prediction.demo \
-        --interactive \
-        --data-folder \"$DATA_DIR\" \
-        --data-source \"$DATA_SOURCE\""
-
-    if [ ! -z "$MODEL_FILE" ]; then
-        CMD="$CMD --model-path \"$MODEL_FILE\""
-    fi
-    
-    eval $CMD
+    python3 -m prediction.demo \
+        --config "$CONFIG_FILE" \
+        --interactive
 }
 
 # ==============================================================================
@@ -435,10 +363,9 @@ quick_demo() {
     cd "$PROJECT_ROOT"
     
     python3 -m prediction.demo \
+        --config "$CONFIG_FILE" \
         --quick \
-        --demo \
-        --data-folder "$DATA_DIR" \
-        --data-source "$DATA_SOURCE"
+        --demo
 }
 
 # ==============================================================================
@@ -464,16 +391,9 @@ batch_predict() {
     
     cd "$PROJECT_ROOT"
     
-    CMD="python3 -m prediction.demo \
-        --batch-predict \"$INPUT_FILE\" \"$OUTPUT_FILE\" \
-        --data-folder \"$DATA_DIR\" \
-        --data-source \"$DATA_SOURCE\""
-
-    if [ ! -z "$MODEL_FILE" ]; then
-        CMD="$CMD --model-path \"$MODEL_FILE\""
-    fi
-    
-    eval $CMD
+    python3 -m prediction.demo \
+        --config "$CONFIG_FILE" \
+        --batch-predict "$INPUT_FILE" "$OUTPUT_FILE"
 }
 
 # ==============================================================================
@@ -483,11 +403,14 @@ batch_predict() {
 show_help() {
     echo "MDKG Drug Repurposing Prediction Pipeline"
     echo ""
-    echo "Usage: $0 [--data-source SOURCE] [--model-file FILE] <command> [options]"
+    echo "Usage: $0 [--config CONFIG_FILE] <command> [options]"
     echo ""
     echo "Global Options:"
-    echo "  --data-source SOURCE  Set data source (sampled, full, full_aug, train)"
-    echo "  --model-file FILE     Path to specific model file (optional)"
+    echo "  --config FILE  Path to prediction config JSON (default: prediction_config.json)"
+    echo ""
+    echo "  All model paths, data sources, hyperparameters, and dimensions are configured"
+    echo "  through the config file. Edit prediction_config.json to change settings:"
+    echo "    $CONFIG_FILE"
     echo ""
     echo "Commands:"
     echo "  train [options]           Train the drug repurposing model"
@@ -505,11 +428,13 @@ show_help() {
     echo "Training Options:"
     echo "  --quick              Quick training mode (fewer epochs)"
     echo "  --skip-pretrain      Skip pre-training phase"
-    echo "  --pretrain-epochs N  Set pre-training epochs (default: $PRETRAIN_EPOCHS)"
-    echo "  --finetune-epochs N  Set fine-tuning epochs (default: $FINETUNE_EPOCHS)"
+    echo "  --pretrain-epochs N  Override pre-training epochs from config"
+    echo "  --finetune-epochs N  Override fine-tuning epochs from config"
     echo ""
-    echo "Example with explicit model:"
-    echo "  $0 --data-source full --model-file my_model.pt predict quetiapine"
+    echo "Examples:"
+    echo "  $0 train                    # Train with default config"
+    echo "  $0 predict quetiapine       # Predict indications"
+    echo "  $0 --config my_config.json train  # Use custom config"
 }
 
 main() {
@@ -517,12 +442,8 @@ main() {
     local args=()
     while [[ $# -gt 0 ]]; do
         case $1 in
-            --data-source)
-                DATA_SOURCE="$2"
-                shift 2
-                ;;
-            --model-file)
-                MODEL_FILE="$2"
+            --config)
+                CONFIG_FILE="$2"
                 shift 2
                 ;;
             *)

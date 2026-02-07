@@ -556,14 +556,24 @@ class DrugRepurposingPredictor:
             raise ValueError("Model not initialized. Run pretrain() first.")
         
         # ==============================================================
-        # CRITICAL FIX (following TxGNN): Reinitialize relation weights
-        # Before finetuning, reset the DistMult decoder weights.
-        # This prevents pretrained relation embeddings (which treated ALL
-        # edges as positive) from biasing the drug-disease scoring.
-        # TxGNN: torch.nn.init.xavier_uniform(self.model.w_rels)
+        # WARM-START relation weights instead of full reinit
+        # 
+        # Original TxGNN uses xavier_uniform_ reinit, but TxGNN has
+        # 2.04M edges for finetuning. MDKG has only ~40 treatment_for
+        # edges - far too few to learn relation embeddings from scratch.
+        #
+        # Strategy: Scale down pretrained relation weights and add
+        # small noise. This preserves structural information learned
+        # during pretraining while resetting the magnitude (pretrain
+        # treats ALL edges as positive, inflating weights).
         # ==============================================================
-        print("  Reinitializing relation weights (following TxGNN)...")
-        nn.init.xavier_uniform_(self.model.pred.W)
+        print("  Warm-starting relation weights (scale down + noise)...")
+        with torch.no_grad():
+            # Scale down pretrained weights (they were biased toward all-positive)
+            self.model.pred.W.data *= 0.1
+            # Add small random noise for exploration
+            noise = torch.randn_like(self.model.pred.W) * 0.01
+            self.model.pred.W.data += noise
         
         self.model.train()
         
@@ -855,6 +865,90 @@ class DrugRepurposingPredictor:
         
         return results
     
+    # ================================================================
+    # Non-drug entity filter
+    # ================================================================
+    # The NER model labels metabolites, neurotransmitters, biomarkers,
+    # signaling molecules, etc. as "drug" type. These must be filtered
+    # out from treatment predictions since they are not pharmaceutical drugs.
+    
+    # Patterns that indicate an entity is NOT a pharmaceutical drug
+    NON_DRUG_PATTERNS = [
+        # Endogenous molecules / neurotransmitters / hormones
+        'serotonin', 'dopamine', 'norepinephrine', 'epinephrine', 'adrenaline',
+        'acetylcholine', 'glutamate', 'gaba', 'glycine', 'histamine',
+        'melatonin', 'oxytocin', 'vasopressin', 'cortisol', 'insulin',
+        'estrogen', 'testosterone', 'progesterone', 'thyroxine',
+        'endorphin', 'enkephalin', 'substance p', 'neuropeptide',
+        # Metabolites / biochemical substances
+        'glucose', 'fructose', 'lactate', 'pyruvate', 'citrate',
+        'cholesterol', 'triglyceride', 'lipoprotein', 'hdl', 'ldl', 'vldl',
+        'urea', 'creatinine', 'bilirubin', 'albumin', 'hemoglobin',
+        'glycogen', 'fatty acid', 'amino acid', 'nucleotide',
+        # Signaling molecules
+        'cyclic adenosine', 'camp', 'cgmp', 'adenosine triphosphate', 'atp',
+        'inositol', 'prostaglandin', 'thromboxane', 'leukotriene',
+        'nitric oxide', 'hydrogen peroxide', 'superoxide',
+        'interleukin', 'interferon', 'tumor necrosis', 'cytokine', 'chemokine',
+        # Ions and elements
+        'calcium', 'sodium', 'potassium', 'magnesium', 'iron', 'zinc',
+        'copper', 'manganese', 'selenium', 'iodine', 'phosphorus',
+        # Proteins (not drugs)
+        'fibrinogen', 'thrombin', 'collagen', 'keratin', 'elastin',
+        'actin', 'myosin', 'tubulin', 'ubiquitin',
+        # Vitamins (supplements, not drugs)
+        'vitamin a', 'vitamin b', 'vitamin c', 'vitamin d', 'vitamin e', 'vitamin k',
+        'retinol', 'thiamine', 'riboflavin', 'niacin', 'pyridoxine',
+        'cobalamin', 'folate', 'folic acid', 'biotin', 'ascorbic acid',
+        # Recreational / illicit substances
+        'mdma', 'methylenedioxy', 'cocaine', 'heroin', 'methamphetamine',
+        'cannabis', 'marijuana', 'thc', 'tetrahydrocannabinol',
+        'lsd', 'lysergic', 'psilocybin', 'mescaline', 'amphetamine',
+        'phencyclidine', 'pcp', 'ketamine',  # ketamine has some medical uses but is often recreational
+        'nicotine', 'ethanol', 'alcohol', 'morphine',  
+        # Generic / overly broad terms
+        'water', 'oxygen', 'nitrogen', 'carbon dioxide', 'saline',
+        'placebo', 'vehicle', 'control', 'baseline',
+    ]
+    
+    # Patterns indicating drug CLASSES (not specific drugs) - these are also
+    # not useful as treatment predictions
+    NON_DRUG_CLASS_PATTERNS = [
+        'agonist', 'antagonist', 'inhibitor', 'blocker', 'modulator',
+        'activator', 'stimulant', 'depressant', 'relaxant',
+        'agents', 'drugs', 'medications', 'compounds', 'derivatives',
+        'receptor', 'channel', 'transporter', 'enzyme',
+    ]
+    
+    @staticmethod
+    def _is_likely_pharmaceutical(drug_name: str) -> bool:
+        """
+        Determine if an entity name is likely a pharmaceutical drug
+        (as opposed to a metabolite, neurotransmitter, biomarker, etc.).
+        
+        Args:
+            drug_name: Entity name from the knowledge graph
+            
+        Returns:
+            True if the entity is likely a pharmaceutical drug
+        """
+        name_lower = drug_name.lower().strip()
+        
+        # Check against non-drug patterns
+        for pattern in DrugRepurposingPredictor.NON_DRUG_PATTERNS:
+            if pattern in name_lower:
+                return False
+        
+        # Check against drug class patterns (these are categories, not specific drugs)
+        # Only filter if the name ENDS with or IS a class term
+        for pattern in DrugRepurposingPredictor.NON_DRUG_CLASS_PATTERNS:
+            # Filter "cholinergic agents" but not "cholinergic agonist drug_name"
+            words = name_lower.split()
+            if len(words) <= 3 and any(w == pattern for w in words):
+                return False
+        
+        return True
+    
     def predict_treatments(
         self,
         disease_name: str,
@@ -901,19 +995,29 @@ class DrugRepurposingPredictor:
                 if triplet['y_idx'] == disease_idx and triplet['y_type'] == 'disease':
                     known_drugs.add(triplet['x_idx'])
         
-        # Format results
+        # Format results with non-drug entity filtering
         results = []
+        filtered_count = 0
         for drug_idx, score in rankings:
             if exclude_known and drug_idx in known_drugs:
                 continue
             
             drug_name = self.data_loader.get_entity_name('drug', drug_idx)
+            
+            # Filter out non-pharmaceutical entities (metabolites, neurotransmitters, etc.)
+            if not self._is_likely_pharmaceutical(drug_name):
+                filtered_count += 1
+                continue
+            
             ontology_info = self.data_loader.get_entity_ontology('drug', drug_idx)
             
             results.append((drug_name, score, ontology_info))
             
             if len(results) >= top_k:
                 break
+        
+        if filtered_count > 0:
+            print(f"  (Filtered {filtered_count} non-pharmaceutical entities from results)")
         
         return results
     

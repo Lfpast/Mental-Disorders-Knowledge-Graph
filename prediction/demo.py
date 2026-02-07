@@ -6,6 +6,10 @@ Drug Repurposing Prediction Demo
 Interactive demonstration of the drug repurposing prediction module
 for the MDKG project.
 
+All settings (model path, data source, hyperparameters, etc.) are
+configured through prediction_config.json. Edit the config file
+to change behavior — no CLI flags needed for model/data selection.
+
 Features:
 1. Interactive mode: Query drugs and diseases in real-time
 2. Demo mode: Showcase predictions with sample queries
@@ -13,17 +17,18 @@ Features:
 4. Evaluation mode: Evaluate model performance
 
 Usage:
-    python demo.py                    # Interactive mode
-    python demo.py --demo             # Demo mode with sample queries
-    python demo.py --train            # Train model
-    python demo.py --evaluate         # Evaluate trained model
-    python demo.py --predict drug     # Predict repurposing for a drug
+    python -m prediction.demo                          # Interactive mode
+    python -m prediction.demo --demo                   # Demo with samples
+    python -m prediction.demo --train                  # Train model
+    python -m prediction.demo --treatments depression  # Predict
+    python -m prediction.demo --config path/to/config  # Custom config
 """
 
 import os
 import sys
+import json
 import argparse
-from typing import Optional
+from typing import Optional, Dict, Any
 import torch
 
 # Add parent directory to path
@@ -36,6 +41,60 @@ except ImportError as e:
     print(f"Import error: {e}")
     print("Make sure you're running from the MDKG project root directory")
     sys.exit(1)
+
+
+# Default config path
+DEFAULT_CONFIG_PATH = "./models/InputsAndOutputs/configs/prediction_config.json"
+
+
+def load_prediction_config(config_path: str) -> Dict[str, Any]:
+    """Load prediction configuration from JSON file.
+    
+    Args:
+        config_path: Path to prediction_config.json
+        
+    Returns:
+        Configuration dictionary
+    """
+    if not os.path.exists(config_path):
+        print(f"Warning: Config file not found: {config_path}")
+        print("  Using built-in defaults.")
+        return {}
+    
+    with open(config_path, 'r', encoding='utf-8') as f:
+        config = json.load(f)
+    
+    print(f"Loaded config from: {config_path}")
+    return config
+
+
+def build_training_config(cfg: Dict[str, Any]) -> TrainingConfig:
+    """Build TrainingConfig from prediction_config.json sections.
+    
+    Args:
+        cfg: Full config dict loaded from prediction_config.json
+        
+    Returns:
+        TrainingConfig instance
+    """
+    model_cfg = cfg.get('model', {})
+    training_cfg = cfg.get('training', {})
+    
+    # Merge model + training sections into TrainingConfig fields
+    merged = {}
+    for key in ['n_inp', 'n_hid', 'n_out', 'attention', 'proto', 'proto_num',
+                'sim_measure', 'agg_measure', 'exp_lambda', 'dropout']:
+        if key in model_cfg:
+            merged[key] = model_cfg[key]
+    
+    for key in ['pretrain_epochs', 'finetune_epochs', 'pretrain_lr', 'finetune_lr',
+                'batch_size', 'weight_decay', 'patience', 'neg_ratio',
+                'print_every', 'eval_every']:
+        if key in training_cfg:
+            merged[key] = training_cfg[key]
+    
+    return TrainingConfig(**{k: v for k, v in merged.items()
+                            if k in TrainingConfig.__dataclass_fields__})
 
 
 def print_banner():
@@ -219,41 +278,40 @@ Commands:
 
 
 def train_model(
-    data_folder: str,
-    output_dir: Optional[str] = None,
-    pretrain_epochs: int = 50,
-    finetune_epochs: int = 200,
+    cfg: Dict[str, Any],
     skip_pretrain: bool = False,
-    data_source: str = 'sampled'
+    pretrain_epochs: Optional[int] = None,
+    finetune_epochs: Optional[int] = None,
 ) -> DrugRepurposingPredictor:
-    """Train the drug repurposing model.
+    """Train the drug repurposing model using prediction_config.json settings.
     
     Args:
-        data_folder: Path to data folder
-        output_dir: Output directory for models
-        pretrain_epochs: Number of pretraining epochs
-        finetune_epochs: Number of finetuning epochs
+        cfg: Full config dict from prediction_config.json
         skip_pretrain: Whether to skip pretraining phase
-        data_source: Data source to use for training. Options:
-            - 'sampled': Active Learning sampled data (default)
-            - 'full': Full MDKG dataset
-            - 'full_aug': Full augmented dataset  
-            - 'train': Training split only
+        pretrain_epochs: Override pretrain epochs (None = use config)
+        finetune_epochs: Override finetune epochs (None = use config)
     """
+    paths_cfg = cfg.get('paths', {})
+    data_cfg = cfg.get('data', {})
+    
+    data_folder = paths_cfg.get('data_folder', './models/InputsAndOutputs')
+    output_dir = os.path.join(data_folder, paths_cfg.get('output_dir', 'output/prediction'))
+    data_source = data_cfg.get('data_source', 'sampled')
+    split = data_cfg.get('split', 'random')
+    seed = data_cfg.get('seed', 42)
+    
     print("\n" + "="*60)
     print("  Training Drug Repurposing Model")
     print("="*60)
     print(f"  Data source: {data_source}")
     
-    config = TrainingConfig(
-        pretrain_epochs=pretrain_epochs,
-        finetune_epochs=finetune_epochs,
-        n_hid=128,
-        n_inp=128,
-        n_out=128,
-        proto=True,
-        proto_num=3,
-    )
+    config = build_training_config(cfg)
+    
+    # Apply CLI overrides if provided
+    if pretrain_epochs is not None:
+        config.pretrain_epochs = pretrain_epochs
+    if finetune_epochs is not None:
+        config.finetune_epochs = finetune_epochs
     
     predictor = DrugRepurposingPredictor(
         data_folder=data_folder,
@@ -261,11 +319,13 @@ def train_model(
         output_dir=output_dir
     )
     
-    predictor.load_data(split='random', seed=42, data_source=data_source)
+    predictor.load_data(split=split, seed=seed, data_source=data_source)
     predictor.train(skip_pretrain=skip_pretrain)
     
-    # Save model
-    predictor.save_model()
+    # Save model to config-specified path
+    model_file = paths_cfg.get('model_file', 'model.pt')
+    model_path = os.path.join(output_dir, model_file)
+    predictor.save_model(model_path)
     
     return predictor
 
@@ -303,29 +363,21 @@ def main():
         description="MDKG Drug Repurposing Prediction Demo",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
+All model, data, and training settings are configured via prediction_config.json.
+Edit the config file to change data source, model path, hyperparameters, etc.
+
 Examples:
-  python demo.py                    # Interactive mode
-  python demo.py --demo             # Demo with sample queries  
-  python demo.py --train            # Train the model
-  python demo.py --evaluate         # Evaluate model
-  python demo.py --predict lithium  # Predict for specific drug
+  python -m prediction.demo                          # Interactive mode (uses config)
+  python -m prediction.demo --train                  # Train model
+  python -m prediction.demo --treatments depression  # Predict treatments
+  python -m prediction.demo --config ./my_config.json --train  # Custom config
         """
     )
     
     parser.add_argument(
-        '--data-folder', '-d',
-        default='./models/InputsAndOutputs',
-        help='Path to data folder'
-    )
-    parser.add_argument(
-        '--output-dir', '-o',
-        default=None,
-        help='Output directory for models and results'
-    )
-    parser.add_argument(
-        '--model-path', '--model-file', '-m',
-        default=None,
-        help='Path to specific pre-trained model file (e.g. model.pt)'
+        '--config', '-c',
+        default=DEFAULT_CONFIG_PATH,
+        help='Path to prediction_config.json (default: %(default)s)'
     )
     parser.add_argument(
         '--train', '-t',
@@ -380,27 +432,19 @@ Examples:
     parser.add_argument(
         '--pretrain-epochs',
         type=int,
-        default=50,
-        help='Number of pretraining epochs'
+        default=None,
+        help='Override pretrain epochs from config'
     )
     parser.add_argument(
         '--finetune-epochs',
         type=int,
-        default=200,
-        help='Number of finetuning epochs'
+        default=None,
+        help='Override finetune epochs from config'
     )
     parser.add_argument(
         '--skip-pretrain',
         action='store_true',
         help='Skip pretraining phase'
-    )
-    parser.add_argument(
-        '--data-source',
-        type=str,
-        default='sampled',
-        choices=['sampled', 'full', 'full_aug', 'train'],
-        help='Data source for training: sampled (AL sampled, default), '
-             'full (complete dataset), full_aug (augmented), train (train split)'
     )
     parser.add_argument(
         '--quick',
@@ -411,6 +455,19 @@ Examples:
     args = parser.parse_args()
     
     print_banner()
+    
+    # Load configuration from prediction_config.json
+    cfg = load_prediction_config(args.config)
+    paths_cfg = cfg.get('paths', {})
+    data_cfg = cfg.get('data', {})
+    
+    data_folder = paths_cfg.get('data_folder', './models/InputsAndOutputs')
+    output_dir = os.path.join(data_folder, paths_cfg.get('output_dir', 'output/prediction'))
+    model_file = paths_cfg.get('model_file', 'model.pt')
+    model_path = os.path.join(output_dir, model_file)
+    data_source = data_cfg.get('data_source', 'sampled')
+    split = data_cfg.get('split', 'random')
+    seed = data_cfg.get('seed', 42)
     
     # Quick mode overrides
     if args.quick:
@@ -423,58 +480,30 @@ Examples:
     
     if args.train:
         predictor = train_model(
-            data_folder=args.data_folder,
-            output_dir=args.output_dir,
+            cfg=cfg,
+            skip_pretrain=args.skip_pretrain,
             pretrain_epochs=args.pretrain_epochs,
             finetune_epochs=args.finetune_epochs,
-            skip_pretrain=args.skip_pretrain,
-            data_source=args.data_source
         )
-    elif args.model_path or os.path.exists(
-        os.path.join(args.data_folder, "output", "prediction", "model.pt")
-    ):
-        # Load existing model
-        model_path = args.model_path or os.path.join(
-            args.data_folder, "output", "prediction", "model.pt"
-        )
-        
-        # Check what data_source the model was trained with
-        checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
-        saved_data_source = checkpoint.get('data_source', None)
-        
-        # Determine data_source to use:
-        # 1. If user explicitly specified --data-source, use that
-        # 2. Otherwise, use saved_data_source from model (if available)
-        # 3. If neither, default to 'sampled'
-        if args.data_source != 'sampled':
-            # User explicitly changed from default
-            data_source_to_use = args.data_source
-            if saved_data_source and saved_data_source != args.data_source:
-                print(f"Warning: Model was trained with '{saved_data_source}', you specified '{args.data_source}'")
-        elif saved_data_source:
-            # Use saved value from model
-            data_source_to_use = saved_data_source
-        else:
-            # Default
-            data_source_to_use = 'sampled'
-        
+    elif os.path.exists(model_path):
+        # Load existing model from config-specified path
         print(f"Loading model from {model_path}")
-        print(f"  Using data_source: {data_source_to_use}")
+        print(f"  Data source: {data_source}")
         
-        predictor = DrugRepurposingPredictor(data_folder=args.data_folder)
-        predictor.load_data(use_cache=True, data_source=data_source_to_use)
+        predictor = DrugRepurposingPredictor(
+            data_folder=data_folder,
+            output_dir=output_dir
+        )
+        predictor.load_data(split=split, seed=seed, use_cache=True, data_source=data_source)
         predictor.load_model(model_path)
     else:
         # Train a quick model for demo
-        print("No trained model found. Training a quick model...")
-        predictor = train_model(
-            data_folder=args.data_folder,
-            output_dir=args.output_dir,
-            pretrain_epochs=5,
-            finetune_epochs=20,
-            skip_pretrain=True,
-            data_source=args.data_source
-        )
+        print(f"No trained model found at {model_path}. Training a quick model...")
+        quick_cfg = dict(cfg)
+        quick_cfg['training'] = dict(cfg.get('training', {}))
+        quick_cfg['training']['pretrain_epochs'] = 5
+        quick_cfg['training']['finetune_epochs'] = 20
+        predictor = train_model(cfg=quick_cfg, skip_pretrain=True)
     
     # Evaluate if requested
     if args.evaluate:
@@ -520,7 +549,7 @@ Examples:
             
             # Save explanation
             output_file = os.path.join(
-                args.output_dir or args.data_folder, 
+                output_dir,
                 f"explanation_{drug_name}_{disease_name}.json".replace(" ", "_")
             )
             with open(output_file, 'w', encoding='utf-8') as f:

@@ -1,30 +1,31 @@
 {
     "model": {
         "description": "TxGNN-inspired model configuration for drug repurposing",
-        "n_inp": 128,
-        "n_hid": 128,
-        "n_out": 128,
-        "attention": false,
+        "n_inp": 256,
+        "n_hid": 256,
+        "n_out": 256,
+        "attention": true,
         "proto": true,
-        "proto_num": 3,
+        "proto_num": 5,
         "sim_measure": "embedding",
         "agg_measure": "rarity",
         "exp_lambda": 0.7,
-        "dropout": 0.1
+        "dropout": 0.2
     },
     "training": {
-        "pretrain_epochs": 50,
-        "finetune_epochs": 200,
-        "pretrain_lr": 0.001,
-        "finetune_lr": 0.0005,
+        "pretrain_epochs": 100,
+        "finetune_epochs": 300,
+        "pretrain_lr": 0.0005,
+        "finetune_lr": 0.0001,
         "batch_size": 1024,
-        "weight_decay": 0.0,
-        "patience": 20,
-        "neg_ratio": 1,
+        "weight_decay": 1e-5,
+        "patience": 30,
+        "neg_ratio": 5,
         "print_every": 10,
-        "eval_every": 20
+        "eval_every": 10
     },
     "data": {
+        "data_source": "sampled",
         "split": "random",
         "seed": 42,
         "train_ratio": 0.8,

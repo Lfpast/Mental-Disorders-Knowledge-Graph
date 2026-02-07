@@ -527,6 +527,9 @@ Output: Community partition
 | **稀疏消息传递** | 优化大图上的 GNN 计算效率 |
 | **硬负采样 (Hard Negative Sampling)** | 针对 "Risk Factor" vs "Treatment" 的混淆问题，训练时强制将风险/关联关系作为负样本，迫使模型区分不同语义 |
 | **推理过滤 (Inference Filtering)** | 预测阶段实时检查 KG，自动过滤已知为禁忌或副作用的药物 |
+| **可学习温度参数 (Learnable Temperature)** | DistMult 评分引入可学习标量 $\tau$，替代硬编码 $1/\sqrt{d}$ 缩放，保证训练-推理评分一致性 |
+| **非药物实体过滤 (Pharmaceutical Filter)** | 推理阶段排除被 NER 错误标注为 "drug" 的代谢物、神经递质、信号分子等非治疗性实体 |
+| **关系权重暖启动 (Warm-Start)** | 微调时缩放预训练权重（×0.1 + noise）而非全量重初始化，适应 MDKG 小数据量场景 |
 
 ### 2.2 核心算法
 
@@ -573,22 +576,34 @@ class HeteroRGCN(nn.Module):
 DistMult 是一种简洁高效的知识图谱嵌入方法：
 
 $$
-\text{score}(h, r, t) = \langle e_h, W_r, e_t \rangle = \sum_i e_h^{(i)} \cdot W_r^{(i)} \cdot e_t^{(i)}
+\text{score}(h, r, t) = \frac{\langle e_h, W_r, e_t \rangle}{\tau} = \frac{\sum_i e_h^{(i)} \cdot W_r^{(i)} \cdot e_t^{(i)}}{\tau}
 $$
 
-**训练目标** - BCE + Margin Ranking Loss:
+其中 $\tau$ 是**可学习温度参数**，初始化为 $\sqrt{d}$（$d$ 为嵌入维度），在训练和推理中同时使用以保证评分一致性。
+
+**训练目标** - 简单 BCE Loss（对齐 TxGNN）:
 
 $$
-\mathcal{L} = \mathcal{L}_{BCE} + 0.5 \times \mathcal{L}_{Margin}
+\mathcal{L} = -\frac{1}{|E|} \sum_{(h,r,t)} \left[ y \log(\sigma(s/\tau)) + (1-y) \log(1-\sigma(s/\tau)) \right]
 $$
 
-$$
-\mathcal{L}_{BCE} = -\frac{1}{|E|} \sum_{(h,r,t)} \left[ y \log(\sigma(s)) + (1-y) \log(1-\sigma(s)) \right]
-$$
+> **设计说明**: 
+> - TxGNN 原始论文仅使用 BCE loss，不含 Margin Ranking Loss
+> - 可学习温度 $\tau$ 替代了之前硬编码的 $1/\sqrt{d}$ 缩放，避免训练-推理不一致
+> - $\tau$ 初始值 $\sqrt{d}$ 等效于 $1/\sqrt{d}$ 缩放，但作为可训练参数自适应调整
+
+**微调阶段关系权重暖启动**:
 
 $$
-\mathcal{L}_{Margin} = \max(0, margin - s_{pos} + s_{neg})
+W_r^{finetune} = 0.1 \cdot W_r^{pretrain} + \epsilon, \quad \epsilon \sim \mathcal{N}(0, 0.01^2)
 $$
+
+> 预训练将所有边视为正样本，导致关系权重偏大。暖启动保留结构信息但缩小量级。
+> MDKG 仅有 ~40 条 `treatment_for` 边，不足以全量重初始化后重新学习（TxGNN 有 2.04M 条边）。
+
+**非药物实体过滤**:
+
+推理阶段对 "drug" 类型实体进行药物学过滤，排除被 NER 模型错误标注为药物的代谢物（glucose）、神经递质（serotonin）、信号分子（cAMP）、违禁品（MDMA）等非治疗性实体。
 
 #### 2.2.3 疾病原型学习 (Disease Prototype Learning)
 

@@ -566,6 +566,14 @@ class DistMultPredictor(nn.Module):
         self.W = nn.Parameter(torch.Tensor(num_relations, n_hid))
         nn.init.xavier_uniform_(self.W, gain=nn.init.calculate_gain('relu'))
         
+        # Learnable temperature parameter for score calibration
+        # Initialized to sqrt(n_hid) to normalize expected score magnitude
+        # score = (h * r * t).sum() / temperature
+        # This replaces the hardcoded 1/sqrt(d) which was only used at inference
+        # By making it learnable and using it in BOTH training and inference,
+        # we ensure train-test consistency while allowing adaptive calibration
+        self.temperature = nn.Parameter(torch.tensor(float(n_hid) ** 0.5))
+        
         # Relation to index mapping
         self.rel2idx: Dict[Tuple, int] = {}
         if G is not None:
@@ -762,11 +770,11 @@ class DistMultPredictor(nn.Module):
                             dst_emb, dst_idx, h['disease'], G, 'disease'
                         )
                 
-                # DistMult scoring: h_s * r * h_t
+                # DistMult scoring: h_s * r * h_t / temperature
                 rel_idx = self.rel2idx.get(etype, 0)
                 rel_emb = self.W[rel_idx]
                 
-                score = (src_emb * rel_emb * dst_emb).sum(dim=-1)
+                score = (src_emb * rel_emb * dst_emb).sum(dim=-1) / self.temperature
                 scores[etype] = score
         
         return scores
@@ -1001,11 +1009,8 @@ class LinkPredictor(nn.Module):
         rel_idx = self.model.pred.rel2idx.get(etype, 0)
         rel_emb = self.model.pred.W[rel_idx]
         
-        # DistMult score
-        # Scale by 1/sqrt(d) to prevent sigmoid saturation
-        dim = drug_emb.shape[-1]
-        scaling = 1.0 / math.sqrt(dim)
-        score = (drug_emb * rel_emb * disease_emb).sum() * scaling
+        # DistMult score with learned temperature (matching training forward pass)
+        score = (drug_emb * rel_emb * disease_emb).sum() / self.model.pred.temperature
         return torch.sigmoid(score).item()
     
     def predict_all_drugs_for_disease(
@@ -1034,12 +1039,10 @@ class LinkPredictor(nn.Module):
         rel_idx = self.model.pred.rel2idx.get(etype, 0)
         rel_emb = self.model.pred.W[rel_idx]
         
-        # Score all drugs
-        # Scale by 1/sqrt(d) to prevent sigmoid saturation
-        dim = drug_embs.shape[-1]
-        scaling = 1.0 / math.sqrt(dim)
-        scores = (drug_embs * rel_emb * disease_emb.unsqueeze(0)).sum(dim=-1) * scaling
-        scores = torch.sigmoid(scores)
+        # Score all drugs using DistMult with learned temperature (matching training)
+        temperature = self.model.pred.temperature
+        raw_scores = (drug_embs * rel_emb * disease_emb.unsqueeze(0)).sum(dim=-1) / temperature
+        scores = torch.sigmoid(raw_scores)  # For display; ranking uses raw_scores
         
         # Safety filter: penalize drugs with known non-treatment relations
         # This is a secondary safeguard; the primary fix is in training.
@@ -1103,12 +1106,10 @@ class LinkPredictor(nn.Module):
         rel_idx = self.model.pred.rel2idx.get(etype, 0)
         rel_emb = self.model.pred.W[rel_idx]
         
-        # Score all diseases
-        # Scale by 1/sqrt(d) to prevent sigmoid saturation
-        dim = drug_emb.shape[-1]
-        scaling = 1.0 / math.sqrt(dim)
-        scores = (drug_emb.unsqueeze(0) * rel_emb * disease_embs).sum(dim=-1) * scaling
-        scores = torch.sigmoid(scores)
+        # Score all diseases using DistMult with learned temperature (matching training)
+        temperature = self.model.pred.temperature
+        raw_scores = (drug_emb.unsqueeze(0) * rel_emb * disease_embs).sum(dim=-1) / temperature
+        scores = torch.sigmoid(raw_scores)  # For display; ranking uses raw_scores
         
         # Safety filter: penalize diseases with known non-treatment relations
         if relation in ['treats', 'treatment_for', 'prevents'] and self.G is not None:
