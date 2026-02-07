@@ -59,4 +59,4 @@ models/InputsAndOutputs/output/
 *.log
 prompt.md
 *.pkl
-history.md
+chat.md

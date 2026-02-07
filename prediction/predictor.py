@@ -173,9 +173,10 @@ class NegativeSampler:
             # SPECIAL HANDLING FOR DRUG-DISEASE TREATMENTS: Hard Negative Sampling
             # Explicitly sample negatives from "associated" relations (risk, cause, etc.)
             # to force the model to distinguish treatment from mere association.
-            if rel_type == 'treats' and src_type == 'drug' and dst_type == 'disease':
-                # Define relations that imply association but NOT treatment
-                hard_rel_types = ['risk_of', 'causes', 'contraindicated_for', 'associated_with']
+            # Use ACTUAL relation names from MDKG schema (DPKG_types_Cor4.json)
+            if rel_type == 'treatment_for' and src_type == 'drug' and dst_type == 'disease':
+                # Relations that imply association but NOT treatment (actual MDKG names)
+                hard_rel_types = ['risk_factor_of', 'associated_with', 'characteristic_of']
                 
                 hard_src_list = []
                 hard_dst_list = []
@@ -199,8 +200,9 @@ class NegativeSampler:
                     
                     num_hard = len(all_hard_src)
                     if num_hard > 0:
-                        # Decide how many hard negatives to inject (max 50% of negatives)
-                        n_hard_to_use = min(n_neg // 2, num_hard * 2)
+                        # Inject MORE hard negatives (up to 70%) since drug-disease
+                        # confusion is the primary problem
+                        n_hard_to_use = min(int(n_neg * 0.7), num_hard * 3)
                         
                         # Sample indices from hard negatives
                         perm = torch.randperm(num_hard, device=self.device)
@@ -380,6 +382,65 @@ class DrugRepurposingPredictor:
         
         return g.to(self.device)
     
+    def _create_anti_treatment_graph(self) -> Optional[Any]:
+        """
+        Create a graph of drug-disease edges that are NOT treatments.
+        
+        These edges (risk_factor_of, associated_with, characteristic_of)
+        connect drugs to diseases but should be scored LOW for treatment
+        prediction. Used as explicit negatives during finetuning.
+        
+        Returns:
+            DGL graph with non-treatment drug-disease edges, or None
+        """
+        # Non-treatment relation types from MDKG schema (DPKG_types_Cor4.json)
+        anti_treatment_rels = ['risk_factor_of', 'associated_with', 'characteristic_of']
+        
+        edges_by_type = defaultdict(lambda: ([], []))
+        
+        for rel in self.data_loader.relations:
+            if rel.relation_type not in anti_treatment_rels:
+                continue
+            
+            h_type = rel.head_entity.entity_type
+            t_type = rel.tail_entity.entity_type
+            
+            # Only drug->disease direction
+            if h_type != 'drug' or t_type != 'disease':
+                continue
+            
+            h_id = rel.head_entity.entity_id
+            t_id = rel.tail_entity.entity_id
+            
+            h_idx = self.data_loader.entity2idx[h_type].get(h_id)
+            t_idx = self.data_loader.entity2idx[t_type].get(t_id)
+            
+            if h_idx is not None and t_idx is not None:
+                # Re-label these as 'treatment_for' edges so they go through
+                # the same DistMult scoring path, but with label=0
+                etype = ('drug', 'treatment_for', 'disease')
+                edges_by_type[etype][0].append(h_idx)
+                edges_by_type[etype][1].append(t_idx)
+        
+        if not edges_by_type:
+            print("  No anti-treatment edges found")
+            return None
+        
+        graph_data = {}
+        for etype, (src, dst) in edges_by_type.items():
+            graph_data[etype] = (torch.tensor(src), torch.tensor(dst))
+            print(f"  Anti-treatment edges ({etype[1]}): {len(src)}")
+        
+        try:
+            g = dgl.heterograph(
+                graph_data,
+                num_nodes_dict={ntype: self.G.num_nodes(ntype) for ntype in self.G.ntypes}
+            )
+            return g.to(self.device)
+        except Exception as e:
+            print(f"  Warning: Could not create anti-treatment graph: {e}")
+            return None
+    
     def pretrain(
         self,
         n_epochs: Optional[int] = None,
@@ -441,27 +502,15 @@ class DrugRepurposingPredictor:
                 self.G, pos_graph, neg_graph, pretrain_mode=True
             )
             
-            # Combined loss: BCE + Margin Ranking Loss for better separation
-            pos_labels = torch.ones_like(pos_combined)
-            neg_labels = torch.zeros_like(neg_combined)
-            
+            # Loss: Simple BCE following TxGNN paper
+            # TxGNN applies sigmoid THEN BCE, equivalent to BCE_with_logits on raw scores
+            # No margin ranking loss - TxGNN does not use it
             all_scores = torch.cat([pos_combined, neg_combined])
-            all_labels = torch.cat([pos_labels, neg_labels])
-            
-            bce_loss = F.binary_cross_entropy_with_logits(all_scores, all_labels)
-            
-            # Margin ranking loss for pairwise comparison
-            if len(pos_combined) > 0 and len(neg_combined) > 0:
-                n_pairs = min(len(pos_combined), len(neg_combined))
-                margin_loss = F.margin_ranking_loss(
-                    pos_combined[:n_pairs],
-                    neg_combined[:n_pairs],
-                    torch.ones(n_pairs, device=self.device),
-                    margin=1.0
-                )
-                loss = bce_loss + 0.5 * margin_loss
-            else:
-                loss = bce_loss
+            all_labels = torch.cat([
+                torch.ones_like(pos_combined),
+                torch.zeros_like(neg_combined)
+            ])
+            loss = F.binary_cross_entropy_with_logits(all_scores, all_labels)
             
             # Backward pass
             loss.backward()
@@ -506,6 +555,16 @@ class DrugRepurposingPredictor:
         if self.model is None:
             raise ValueError("Model not initialized. Run pretrain() first.")
         
+        # ==============================================================
+        # CRITICAL FIX (following TxGNN): Reinitialize relation weights
+        # Before finetuning, reset the DistMult decoder weights.
+        # This prevents pretrained relation embeddings (which treated ALL
+        # edges as positive) from biasing the drug-disease scoring.
+        # TxGNN: torch.nn.init.xavier_uniform(self.model.w_rels)
+        # ==============================================================
+        print("  Reinitializing relation weights (following TxGNN)...")
+        nn.init.xavier_uniform_(self.model.pred.W)
+        
         self.model.train()
         
         # Ensure graph is on device
@@ -530,6 +589,14 @@ class DrugRepurposingPredictor:
         train_graph = self._create_training_graph(self.data_loader.df_train)
         valid_graph = self._create_training_graph(self.data_loader.df_valid)
         
+        # ==============================================================
+        # CRITICAL FIX: Create explicit negative graph from non-treatment
+        # drug-disease relations (risk_factor_of, associated_with, etc.)
+        # This forces the model to learn that these connections are NOT
+        # treatment indications.
+        # ==============================================================
+        anti_treatment_graph = self._create_anti_treatment_graph()
+        
         # Training loop
         history = {'train_loss': [], 'valid_loss': []}
         best_valid_loss = float('inf')
@@ -541,6 +608,7 @@ class DrugRepurposingPredictor:
             # Training
             self.model.train()
             
+            # Sample random negatives
             neg_graph = neg_sampler.sample(train_graph)
             
             optimizer.zero_grad()
@@ -548,27 +616,30 @@ class DrugRepurposingPredictor:
                 self.G, train_graph, neg_graph, pretrain_mode=False
             )
             
-            # Combined loss: BCE + Margin Ranking Loss
-            pos_labels = torch.ones_like(pos_combined)
-            neg_labels = torch.zeros_like(neg_combined)
-            
-            all_scores = torch.cat([pos_combined, neg_combined])
-            all_labels = torch.cat([pos_labels, neg_labels])
-            
-            bce_loss = F.binary_cross_entropy_with_logits(all_scores, all_labels)
-            
-            # Margin ranking loss
-            if len(pos_combined) > 0 and len(neg_combined) > 0:
-                n_pairs = min(len(pos_combined), len(neg_combined))
-                margin_loss = F.margin_ranking_loss(
-                    pos_combined[:n_pairs],
-                    neg_combined[:n_pairs],
-                    torch.ones(n_pairs, device=self.device),
-                    margin=1.0
+            # Score anti-treatment edges as explicit negatives
+            # These are drug-disease pairs connected by risk_factor_of,
+            # associated_with, etc. - they should NOT be predicted as treatments
+            anti_neg_combined = torch.tensor([], device=self.device)
+            if anti_treatment_graph is not None and anti_treatment_graph.num_edges() > 0:
+                h_cached = self.model.encode(self.G)
+                anti_scores = self.model.pred(
+                    anti_treatment_graph, self.G, h_cached, pretrain_mode=False
                 )
-                train_loss = bce_loss + 0.5 * margin_loss
-            else:
-                train_loss = bce_loss
+                if anti_scores:
+                    anti_neg_combined = torch.cat([s for s in anti_scores.values()])
+            
+            # Simple BCE loss following TxGNN (no margin ranking loss)
+            all_scores = torch.cat([
+                pos_combined,
+                neg_combined,
+                anti_neg_combined
+            ])
+            all_labels = torch.cat([
+                torch.ones_like(pos_combined),
+                torch.zeros_like(neg_combined),
+                torch.zeros_like(anti_neg_combined)
+            ])
+            train_loss = F.binary_cross_entropy_with_logits(all_scores, all_labels)
             
             train_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
@@ -594,6 +665,16 @@ class DrugRepurposingPredictor:
                     valid_loss = F.binary_cross_entropy_with_logits(all_v, labels_v)
                     history['valid_loss'].append(valid_loss.item())
                     last_valid_loss = valid_loss.item()
+                    
+                    # Also compute validation AUROC for better monitoring
+                    with torch.no_grad():
+                        v_probs = torch.sigmoid(all_v).cpu().numpy()
+                        v_labels = labels_v.cpu().numpy()
+                        try:
+                            from sklearn.metrics import roc_auc_score
+                            val_auroc = roc_auc_score(v_labels, v_probs)
+                        except:
+                            val_auroc = 0.0
                 
                 scheduler.step(valid_loss)
                 
