@@ -525,6 +525,8 @@ Output: Community partition
 | **Mini-batch 训练** | 支持大规模知识图谱的可扩展训练 |
 | **邻居采样** | 使用 DGL NeighborSampler 降低内存消耗 |
 | **稀疏消息传递** | 优化大图上的 GNN 计算效率 |
+| **硬负采样 (Hard Negative Sampling)** | 针对 "Risk Factor" vs "Treatment" 的混淆问题，训练时强制将风险/关联关系作为负样本，迫使模型区分不同语义 |
+| **推理过滤 (Inference Filtering)** | 预测阶段实时检查 KG，自动过滤已知为禁忌或副作用的药物 |
 
 ### 2.2 核心算法
 

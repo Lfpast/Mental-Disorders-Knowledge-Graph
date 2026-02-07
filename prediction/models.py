@@ -1041,6 +1041,64 @@ class LinkPredictor(nn.Module):
         scores = (drug_embs * rel_emb * disease_emb.unsqueeze(0)).sum(dim=-1) * scaling
         scores = torch.sigmoid(scores)
         
+        # INFERENCE FILTERING:
+        # Mask out drugs that have non-treatment relations (risk, cause, etc.) with this disease
+        # This prevents the model from predicting high scores for drugs that are merely "associated" with the disease
+        # We check both raw relation types (e.g. 'risk_factor_of') and simplified ones just in case
+        if relation in ['treats', 'treatment_for', 'prevents'] and self.G is not None:
+            # Relations that imply negative or non-therapeutic association
+            filter_rels = [
+                'risk_factor_of', 'risk_of', 
+                'causes', 
+                'contraindicated_for', 'contraindicated',
+                'associated_with', 'association',
+                'side_effect_of', 'side_effect',
+                'may_cause', 'worsens', 'induces'
+            ]
+            
+            drugs_to_mask = set()
+            
+            # Check for direct edges first: drug --rel--> disease
+            for rel_name in filter_rels:
+                # Iterate over ALL possible edge type combinations that match (drug, rel, disease)
+                # This handles cases where 'drug' might be 'chemical' or 'substance' if the graph is messy
+                # But primarily we care about the canonical 'drug' type
+                possible_etypes = [
+                    ('drug', rel_name, 'disease'),
+                    ('drug', rel_name, 'problem'), # In case disease is typed as problem
+                    ('chemical', rel_name, 'disease') # In case drug is typed as chemical
+                ]
+                
+                # Also iterate over all actual graph etypes to find partial matches
+                # This is more robust against naming variations in the graph
+                for et in self.G.canonical_etypes:
+                    src_t, rel_t, dst_t = et
+                    if rel_t == rel_name and dst_t == 'disease':
+                         possible_etypes.append(et)
+
+                for etype in set(possible_etypes):
+                    if etype in self.G.canonical_etypes:
+                        try:
+                            # Find drugs (src) connected to this disease (dst) via this relation
+                            # In DGL, in_edges(v) returns (u, v) edges coming into v
+                            # Only if src_type matches 'drug' (which is the index space of scores)
+                            if etype[0] == 'drug': 
+                                src_curr, _ = self.G.in_edges(disease_idx, etype=etype)
+                                if len(src_curr) > 0:
+                                    drugs_to_mask.update(src_curr.tolist())
+                        except Exception:
+                            pass 
+
+            if drugs_to_mask:
+                # Apply mask (set score to near zero)
+                mask_indices = torch.tensor(list(drugs_to_mask), device=scores.device, dtype=torch.long)
+                scores[mask_indices] = 1e-6
+
+            if drugs_to_mask:
+                # Apply mask (set score to near zero)
+                mask_indices = torch.tensor(list(drugs_to_mask), device=scores.device, dtype=torch.long)
+                scores[mask_indices] = 1e-6
+
         # Sort
         sorted_idx = torch.argsort(scores, descending=True)
         results = [(idx.item(), scores[idx].item()) for idx in sorted_idx]
@@ -1080,6 +1138,34 @@ class LinkPredictor(nn.Module):
         scores = (drug_emb.unsqueeze(0) * rel_emb * disease_embs).sum(dim=-1) * scaling
         scores = torch.sigmoid(scores)
         
+        # INFERENCE FILTERING:
+        # Mask out diseases that have non-treatment relations (risk, cause, associated) with this drug
+        if relation in ['treats', 'treatment_for', 'prevents'] and self.G is not None:
+            filter_rels = [
+                'risk_factor_of', 'risk_of', 
+                'causes', 
+                'contraindicated_for', 'contraindicated',
+                'associated_with', 'association',
+                'side_effect_of', 'side_effect'
+            ]
+            
+            diseases_to_mask = set()
+            for rel_name in filter_rels:
+                etype = ('drug', rel_name, 'disease')
+                if etype in self.G.canonical_etypes:
+                    try:
+                        # Find diseases (dst) connected from this drug (src) via this relation
+                        # In DGL, out_edges(u) returns (u, v) edges going out from u
+                        _, dst_curr = self.G.out_edges(drug_idx, etype=etype)
+                        if len(dst_curr) > 0:
+                            diseases_to_mask.update(dst_curr.tolist())
+                    except Exception:
+                        pass
+
+            if diseases_to_mask:
+                mask_indices = torch.tensor(list(diseases_to_mask), device=scores.device, dtype=torch.long)
+                scores[mask_indices] = 1e-6
+
         # Sort
         sorted_idx = torch.argsort(scores, descending=True)
         results = [(idx.item(), scores[idx].item()) for idx in sorted_idx]

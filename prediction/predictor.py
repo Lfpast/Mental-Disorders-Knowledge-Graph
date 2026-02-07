@@ -169,6 +169,54 @@ class NegativeSampler:
                     device=self.device
                 )
                 neg_dst = dst.repeat(self.neg_ratio)
+
+            # SPECIAL HANDLING FOR DRUG-DISEASE TREATMENTS: Hard Negative Sampling
+            # Explicitly sample negatives from "associated" relations (risk, cause, etc.)
+            # to force the model to distinguish treatment from mere association.
+            if rel_type == 'treats' and src_type == 'drug' and dst_type == 'disease':
+                # Define relations that imply association but NOT treatment
+                hard_rel_types = ['risk_of', 'causes', 'contraindicated_for', 'associated_with']
+                
+                hard_src_list = []
+                hard_dst_list = []
+                
+                for hard_rel in hard_rel_types:
+                    hard_etype = (src_type, hard_rel, dst_type)
+                    if hard_etype in self.G.canonical_etypes:
+                        try:
+                            # Safely get edges (handle CPU/GPU mismatch if needed)
+                            h_src, h_dst = self.G.edges(etype=hard_etype)
+                            if len(h_src) > 0:
+                                hard_src_list.append(h_src)
+                                hard_dst_list.append(h_dst)
+                        except Exception:
+                            continue
+                
+                if hard_src_list:
+                    # Collect all available hard negative pairs
+                    all_hard_src = torch.cat(hard_src_list).to(self.device)
+                    all_hard_dst = torch.cat(hard_dst_list).to(self.device)
+                    
+                    num_hard = len(all_hard_src)
+                    if num_hard > 0:
+                        # Decide how many hard negatives to inject (max 50% of negatives)
+                        n_hard_to_use = min(n_neg // 2, num_hard * 2)
+                        
+                        # Sample indices from hard negatives
+                        perm = torch.randperm(num_hard, device=self.device)
+                        indices = perm[:n_hard_to_use]
+                        
+                        # Tile if we need more than we have
+                        if n_hard_to_use > len(indices):
+                            repeat_factor = (n_hard_to_use // len(indices)) + 1
+                            indices = torch.cat([indices] * repeat_factor)[:n_hard_to_use]
+                        
+                        sel_src = all_hard_src[indices]
+                        sel_dst = all_hard_dst[indices]
+                        
+                        # Overwrite the first portion of random negatives
+                        neg_src[:n_hard_to_use] = sel_src
+                        neg_dst[:n_hard_to_use] = sel_dst
             
             neg_edges[etype] = (neg_src, neg_dst)
         
