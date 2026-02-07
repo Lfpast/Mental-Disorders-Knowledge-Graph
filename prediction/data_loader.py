@@ -206,14 +206,14 @@ class MDKGDataLoader:
         triplets_path = triplets_path or self.triplets_path
         entity_linking_path = entity_linking_path or self.entity_linking_path
         
-        # Check for cache
-        cache_file = os.path.join(self.cache_dir, "processed_data.pkl")
+        # Check for cache - use data_source in cache filename to avoid conflicts
+        cache_file = os.path.join(self.cache_dir, f"processed_data_{self.data_source}.pkl")
         if use_cache and os.path.exists(cache_file):
-            print("Loading from cache...")
+            print(f"Loading from cache ({self.data_source})...")
             self._load_cache(cache_file)
             return
         
-        print("Loading MDKG data...")
+        print(f"Loading MDKG data from {self.data_source}...")
         
         # Load entity linking results
         if os.path.exists(entity_linking_path):

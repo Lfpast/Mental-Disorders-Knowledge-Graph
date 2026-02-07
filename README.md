@@ -209,7 +209,7 @@ python entity_linking.py
 
 ---
 
-### Stage 6: Graph RAG for Mental Health Q&A (NEW)
+### Stage 6: Graph RAG for Mental Health Q&A
 
 This stage enables **Knowledge Graph-enhanced Retrieval-Augmented Generation (Graph RAG)** for answering mental health questions. The implementation strictly follows the [KGARevion paper](https://arxiv.org/abs/2410.04660).
 
@@ -278,7 +278,7 @@ python GraphRAG/graph_rag_demo.py --community -i
 
 ---
 
-### Stage 7: Drug Repurposing Prediction (NEW)
+### Stage 7: Drug Repurposing Prediction
 
 This stage enables **Drug-Disease Link Prediction** for drug repurposing in mental health disorders. The implementation is based on [TxGNN](https://www.nature.com/articles/s41591-023-02233-x) (Nature Medicine 2024) with [GNNExplainer](https://arxiv.org/abs/1903.03894) (NeurIPS 2019) for prediction interpretability.
 
