@@ -64,10 +64,18 @@ EXPLAINER_EPOCHS=100
 EXPLAINER_LR=0.01
 NUM_HOPS=2
 
+# Data source (can be overridden with --data-source)
+# Options: sampled, full, full_aug, train
+DATA_SOURCE="sampled"
+
 # ==============================================================================
 # Helper Functions
 # ==============================================================================
 
+##
+# Print section header
+# @param $1 Header text
+##
 print_header() {
     echo ""
     echo "=================================================================="
@@ -76,10 +84,18 @@ print_header() {
     echo ""
 }
 
+##
+# Print step with timestamp
+# @param $1 Step description
+##
 print_step() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1"
 }
 
+##
+# Check if dependencies are installed
+# @brief Verifies python3, torch, and dgl are available
+##
 check_dependencies() {
     print_step "Checking dependencies..."
     
@@ -103,6 +119,10 @@ check_dependencies() {
     print_step "All dependencies satisfied"
 }
 
+##
+# Check if input data exists
+# @brief Verifies availability of triplets and entity linking files
+##
 check_data() {
     print_step "Checking MDKG data..."
     
@@ -130,13 +150,17 @@ check_data() {
 # Training Functions
 # ==============================================================================
 
+##
+# Train the drug repurposing model
+# @param ... Training arguments (pretrain-epochs, finetune-epochs, etc.)
+##
 train_model() {
     print_header "Training Drug Repurposing Model"
     
     local PRETRAIN=$PRETRAIN_EPOCHS
     local FINETUNE=$FINETUNE_EPOCHS
     local SKIP_PRETRAIN=""
-    local DATA_SOURCE="sampled"
+    local LOCAL_DATA_SOURCE="$DATA_SOURCE"
     
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -160,7 +184,7 @@ train_model() {
                 shift 2
                 ;;
             --data-source)
-                DATA_SOURCE=$2
+                LOCAL_DATA_SOURCE=$2
                 shift 2
                 ;;
             *)
@@ -169,7 +193,7 @@ train_model() {
         esac
     done
     
-    print_step "Data source: $DATA_SOURCE"
+    print_step "Data source: $LOCAL_DATA_SOURCE"
     print_step "Pre-training epochs: $PRETRAIN"
     print_step "Fine-tuning epochs: $FINETUNE"
     
@@ -184,7 +208,7 @@ train_model() {
         --output-dir "$OUTPUT_DIR" \
         --pretrain-epochs $PRETRAIN \
         --finetune-epochs $FINETUNE \
-        --data-source "$DATA_SOURCE" \
+        --data-source "$LOCAL_DATA_SOURCE" \
         $SKIP_PRETRAIN
     
     print_step "Model saved to: $OUTPUT_DIR/model.pt"
@@ -194,11 +218,15 @@ train_model() {
 # Prediction Functions
 # ==============================================================================
 
+##
+# Predict repurposing candidates for a specific drug
+# @param $1 Drug name
+##
 predict_drug() {
     local DRUG_NAME=$1
     
     if [ -z "$DRUG_NAME" ]; then
-        echo "Usage: $0 predict <drug_name>"
+        echo "Usage: $0 predict <drug_name> [--data-source SOURCE]"
         echo "Example: $0 predict quetiapine"
         exit 1
     fi
@@ -209,9 +237,14 @@ predict_drug() {
     
     python3 -m prediction.demo \
         --predict "$DRUG_NAME" \
-        --data-folder "$DATA_DIR"
+        --data-folder "$DATA_DIR" \
+        --data-source "$DATA_SOURCE"
 }
 
+##
+# Predict potential treatments for a specific disease
+# @param $1 Disease name
+##
 predict_disease() {
     local DISEASE_NAME=$1
     
@@ -225,45 +258,27 @@ predict_disease() {
     
     cd "$PROJECT_ROOT"
     
-    python3 -c "
-import sys
-sys.path.insert(0, '.')
-from prediction import DrugRepurposingPredictor
-
-predictor = DrugRepurposingPredictor(data_folder='$DATA_DIR')
-predictor.load_data(use_cache=True)
-
-model_path = '$OUTPUT_DIR/model.pt'
-import os
-if os.path.exists(model_path):
-    predictor.load_model(model_path)
-else:
-    print('Training quick model...')
-    predictor.train(pretrain_epochs=5, finetune_epochs=20, skip_pretrain=True)
-
-results = predictor.predict_treatments('$DISEASE_NAME', top_k=20)
-
-print()
-print('=' * 60)
-print(f'  Predicted Treatments for: $DISEASE_NAME')
-print('=' * 60)
-
-for i, (drug, score, onto) in enumerate(results, 1):
-    bar = '█' * int(score * 20) + '░' * (20 - int(score * 20))
-    print(f'  {i:2d}. {drug[:40]:<40} {bar} {score:.4f}')
-"
+    python3 -m prediction.demo \
+        --treatments "$DISEASE_NAME" \
+        --data-folder "$DATA_DIR" \
+        --data-source "$DATA_SOURCE"
 }
 
 # ==============================================================================
 # Explainability Functions (GNNExplainer)
 # ==============================================================================
 
+##
+# Explain a prediction for a drug-disease pair
+# @param $1 Drug name
+# @param $2 Disease name
+##
 explain_prediction() {
     local DRUG_NAME=$1
     local DISEASE_NAME=$2
     
     if [ -z "$DRUG_NAME" ] || [ -z "$DISEASE_NAME" ]; then
-        echo "Usage: $0 explain <drug_name> <disease_name>"
+        echo "Usage: $0 explain <drug_name> <disease_name> [--data-source SOURCE]"
         echo "Example: $0 explain metformin 'type 2 diabetes'"
         exit 1
     fi
@@ -272,69 +287,23 @@ explain_prediction() {
     
     cd "$PROJECT_ROOT"
     
-    python3 -c "
-import sys
-sys.path.insert(0, '.')
-from prediction import DrugRepurposingPredictor
-
-predictor = DrugRepurposingPredictor(data_folder='$DATA_DIR')
-predictor.load_data(use_cache=True)
-
-model_path = '$OUTPUT_DIR/model.pt'
-import os
-if os.path.exists(model_path):
-    predictor.load_model(model_path)
-else:
-    print('Training quick model...')
-    predictor.train(pretrain_epochs=5, finetune_epochs=20, skip_pretrain=True)
-
-# Generate explanation
-print()
-print('Generating explanation using GNNExplainer...')
-print('(This may take a moment)')
-print()
-
-try:
-    explanation = predictor.explain_prediction(
-        drug_name='$DRUG_NAME',
-        disease_name='$DISEASE_NAME',
-        num_hops=$NUM_HOPS,
-        epochs=$EXPLAINER_EPOCHS
-    )
-    
-    print()
-    print('=' * 70)
-    print()
-    
-    # Print the human-readable explanation
-    if explanation.explanation_text:
-        print(explanation.explanation_text)
-    else:
-        print(f'Prediction Score: {explanation.prediction_score:.4f}')
-        print('No detailed explanation available.')
-    
-    # Save explanation
-    import json
-    output_file = '$OUTPUT_DIR/explanation_${DRUG_NAME}_${DISEASE_NAME}.json'
-    with open(output_file.replace(' ', '_'), 'w', encoding='utf-8') as f:
-        json.dump(explanation.to_dict(), f, indent=2, ensure_ascii=False)
-    print()
-    print('=' * 70)
-    print(f'Explanation saved to: {output_file.replace(\" \", \"_\")}')
-    
-except Exception as e:
-    print(f'Error generating explanation: {e}')
-    import traceback
-    traceback.print_exc()
-"
+    python3 -m prediction.demo \
+        --explain "$DRUG_NAME" "$DISEASE_NAME" \
+        --data-folder "$DATA_DIR" \
+        --data-source "$DATA_SOURCE"
 }
 
+##
+# Batch generate explanations for drug-disease pairs
+# @param $1 Input file (csv: drug,disease)
+# @param $2 Output file (json)
+##
 explain_batch() {
     local INPUT_FILE=$1
     local OUTPUT_FILE=$2
     
     if [ -z "$INPUT_FILE" ] || [ -z "$OUTPUT_FILE" ]; then
-        echo "Usage: $0 explain-batch <input_file> <output_file>"
+        echo "Usage: $0 explain-batch <input_file> <output_file> [--data-source SOURCE]"
         echo "Input file should contain drug,disease pairs, one per line"
         exit 1
     fi
@@ -343,65 +312,19 @@ explain_batch() {
     
     cd "$PROJECT_ROOT"
     
-    python3 -c "
-import sys
-import json
-sys.path.insert(0, '.')
-from prediction import DrugRepurposingPredictor
-
-predictor = DrugRepurposingPredictor(data_folder='$DATA_DIR')
-predictor.load_data(use_cache=True)
-
-model_path = '$OUTPUT_DIR/model.pt'
-import os
-if os.path.exists(model_path):
-    predictor.load_model(model_path)
-else:
-    print('Training quick model...')
-    predictor.train(pretrain_epochs=5, finetune_epochs=20, skip_pretrain=True)
-
-# Read pairs from file
-pairs = []
-with open('$INPUT_FILE', 'r') as f:
-    for line in f:
-        line = line.strip()
-        if line and ',' in line:
-            drug, disease = line.split(',', 1)
-            pairs.append((drug.strip(), disease.strip()))
-
-print(f'Processing {len(pairs)} drug-disease pairs...')
-
-results = []
-for drug, disease in pairs:
-    print(f'  Explaining: {drug} -> {disease}')
-    try:
-        explanation = predictor.explain_prediction(drug, disease, epochs=50)
-        results.append({
-            'drug': drug,
-            'disease': disease,
-            'prediction_score': explanation.prediction_score,
-            'fidelity': explanation.fidelity,
-            'top_edges': [(e[0], e[1], float(e[2]), e[3]) for e in explanation.edge_importance[:10]],
-            'pathways': explanation.pathways[:3]
-        })
-    except Exception as e:
-        results.append({
-            'drug': drug,
-            'disease': disease,
-            'error': str(e)
-        })
-
-with open('$OUTPUT_FILE', 'w') as f:
-    json.dump(results, f, indent=2)
-
-print(f'Results saved to: $OUTPUT_FILE')
-"
+    python3 -m prediction.demo \
+        --explain-batch "$INPUT_FILE" "$OUTPUT_FILE" \
+        --data-folder "$DATA_DIR" \
+        --data-source "$DATA_SOURCE"
 }
 
 # ==============================================================================
 # Evaluation Functions
 # ==============================================================================
 
+##
+# Evaluate model performance using standard metrics
+##
 evaluate_model() {
     print_header "Evaluating Model Performance"
     
@@ -409,7 +332,8 @@ evaluate_model() {
     
     python3 -m prediction.demo \
         --evaluate \
-        --data-folder "$DATA_DIR"
+        --data-folder "$DATA_DIR" \
+        --data-source "$DATA_SOURCE"
     
     print_step "Evaluation results saved to: $OUTPUT_DIR/evaluation_results.json"
 }
@@ -418,6 +342,9 @@ evaluate_model() {
 # Demo Functions
 # ==============================================================================
 
+##
+# Run demo with sample queries
+##
 run_demo() {
     print_header "Running Interactive Demo"
     
@@ -425,22 +352,31 @@ run_demo() {
     
     python3 -m prediction.demo \
         --demo \
-        --data-folder "$DATA_DIR"
+        --data-folder "$DATA_DIR" \
+        --data-source "$DATA_SOURCE"
 }
 
+##
+# Start interactive shell
+##
 run_interactive() {
     print_header "Interactive Prediction Mode"
     
     cd "$PROJECT_ROOT"
     
     python3 -m prediction.demo \
-        --data-folder "$DATA_DIR"
+        --interactive \
+        --data-folder "$DATA_DIR" \
+        --data-source "$DATA_SOURCE"
 }
 
 # ==============================================================================
 # Quick Mode
 # ==============================================================================
 
+##
+# Quick demo for testing (train + demo)
+##
 quick_demo() {
     print_header "Quick Demo Mode"
     print_step "Training a quick model and running demo..."
@@ -450,19 +386,25 @@ quick_demo() {
     python3 -m prediction.demo \
         --quick \
         --demo \
-        --data-folder "$DATA_DIR"
+        --data-folder "$DATA_DIR" \
+        --data-source "$DATA_SOURCE"
 }
 
 # ==============================================================================
 # Batch Prediction
 # ==============================================================================
 
+##
+# Batch predict candidates for a list of drugs
+# @param $1 Input file (drug per line)
+# @param $2 Output file (json)
+##
 batch_predict() {
     local INPUT_FILE=$1
     local OUTPUT_FILE=$2
     
     if [ -z "$INPUT_FILE" ] || [ -z "$OUTPUT_FILE" ]; then
-        echo "Usage: $0 batch <input_file> <output_file>"
+        echo "Usage: $0 batch <input_file> <output_file> [--data-source SOURCE]"
         echo "Input file should contain one drug name per line"
         exit 1
     fi
@@ -471,40 +413,10 @@ batch_predict() {
     
     cd "$PROJECT_ROOT"
     
-    python3 -c "
-import sys
-import json
-sys.path.insert(0, '.')
-from prediction import DrugRepurposingPredictor
-
-predictor = DrugRepurposingPredictor(data_folder='$DATA_DIR')
-predictor.load_data(use_cache=True)
-
-model_path = '$OUTPUT_DIR/model.pt'
-import os
-if os.path.exists(model_path):
-    predictor.load_model(model_path)
-else:
-    print('Training quick model...')
-    predictor.train(pretrain_epochs=5, finetune_epochs=20, skip_pretrain=True)
-
-results = {}
-with open('$INPUT_FILE', 'r') as f:
-    drugs = [line.strip() for line in f if line.strip()]
-
-for drug in drugs:
-    print(f'Processing: {drug}')
-    try:
-        predictions = predictor.predict_repurposing(drug, top_k=20)
-        results[drug] = [{'disease': d, 'score': s} for d, s, _ in predictions]
-    except Exception as e:
-        results[drug] = {'error': str(e)}
-
-with open('$OUTPUT_FILE', 'w') as f:
-    json.dump(results, f, indent=2)
-
-print(f'Results saved to: $OUTPUT_FILE')
-"
+    python3 -m prediction.demo \
+        --batch-predict "$INPUT_FILE" "$OUTPUT_FILE" \
+        --data-folder "$DATA_DIR" \
+        --data-source "$DATA_SOURCE"
 }
 
 # ==============================================================================
@@ -514,7 +426,14 @@ print(f'Results saved to: $OUTPUT_FILE')
 show_help() {
     echo "MDKG Drug Repurposing Prediction Pipeline"
     echo ""
-    echo "Usage: $0 <command> [options]"
+    echo "Usage: $0 [--data-source SOURCE] <command> [options]"
+    echo ""
+    echo "Global Options:"
+    echo "  --data-source SOURCE  Set data source for all commands:"
+    echo "                          sampled  - Active Learning sampled data (default)"
+    echo "                          full     - Full MDKG dataset"
+    echo "                          full_aug - Full augmented dataset"
+    echo "                          train    - Training split only"
     echo ""
     echo "Commands:"
     echo "  train [options]           Train the drug repurposing model"
@@ -534,11 +453,6 @@ show_help() {
     echo "  --skip-pretrain      Skip pre-training phase"
     echo "  --pretrain-epochs N  Set pre-training epochs (default: $PRETRAIN_EPOCHS)"
     echo "  --finetune-epochs N  Set fine-tuning epochs (default: $FINETUNE_EPOCHS)"
-    echo "  --data-source SOURCE Set data source for training:"
-    echo "                         sampled  - Active Learning sampled data (default)"
-    echo "                         full     - Full MDKG dataset"
-    echo "                         full_aug - Full augmented dataset"
-    echo "                         train    - Training split only"
     echo ""
     echo "Explainability Options:"
     echo "  The explain command uses GNNExplainer to identify important"
@@ -547,21 +461,37 @@ show_help() {
     echo ""
     echo "Examples:"
     echo "  $0 train --quick"
-    echo "  $0 train --data-source full"
-    echo "  $0 predict quetiapine"
-    echo "  $0 treatments depression"
-    echo "  $0 explain metformin 'type 2 diabetes'"
+    echo "  $0 --data-source full train"
+    echo "  $0 --data-source full_aug predict quetiapine"
+    echo "  $0 --data-source sampled treatments depression"
+    echo "  $0 --data-source full_aug explain metformin 'type 2 diabetes'"
     echo "  $0 batch drugs.txt results.json"
 }
 
 main() {
+    # Parse global options first
+    local args=()
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --data-source)
+                DATA_SOURCE="$2"
+                shift 2
+                ;;
+            *)
+                args+=("$1")
+                shift
+                ;;
+        esac
+    done
+    
+    # Restore positional parameters
+    set -- "${args[@]}"
+    
     local CMD=${1:-help}
     shift || true
     
     case $CMD in
         train)
-            check_dependencies
-            check_data
             train_model "$@"
             ;;
         predict)
@@ -577,18 +507,16 @@ main() {
             explain_batch "$@"
             ;;
         evaluate)
-            evaluate_model
+            evaluate_model "$@"
             ;;
         demo)
-            run_demo
+            run_demo "$@"
             ;;
         interactive)
-            run_interactive
+            run_interactive "$@"
             ;;
         quick)
-            check_dependencies
-            check_data
-            quick_demo
+            quick_demo "$@"
             ;;
         batch)
             batch_predict "$@"
@@ -601,7 +529,7 @@ main() {
             show_help
             ;;
         *)
-            echo "Unknown command: $CMD"
+            echo "Error: Unknown command '$CMD'"
             show_help
             exit 1
             ;;

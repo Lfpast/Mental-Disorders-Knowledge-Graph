@@ -324,70 +324,64 @@ The system implements a Graph Neural Network (GNN) approach with metric learning
 
 #### Method 1: Shell Script
 ```bash
-# Train the model (full training with pretrain + finetune)
-# --data-source: 选择训练数据 (sampled|full|full_aug|train)
-#   sampled (默认): Active Learning 采样后的数据，较小
-#   full: 全量数据集 md_KG_all_0217.json
-#   full_aug: 全量增强数据集
-#   train: 仅训练集
-bash shell/prediction.sh train
-bash shell/prediction.sh train --data-source full  # 使用全量数据训练
+# General Syntax
+# bash shell/prediction.sh [--data-source SOURCE] <command> [options]
+# SOURCE options: sampled (default), full, full_aug, train
 
-# Quick training (快速测试模式，跳过pretrain，减少epochs)
+# Train the model
+bash shell/prediction.sh train
+bash shell/prediction.sh --data-source full train  # Train on full dataset
+
+# Quick training (skip pretrain, fewer epochs)
 bash shell/prediction.sh quick
 
-# Predict new indications for a drug (药物重定位)
-# 输入: 药物名称
-# 输出: 该药物可能治疗的疾病列表，按预测分数排序
+# Predict new indications for a drug
 bash shell/prediction.sh predict quetiapine
+bash shell/prediction.sh --data-source full predict quetiapine
 
-# Predict treatments for a disease (疾病治疗预测)
-# 输入: 疾病名称
-# 输出: 可能治疗该疾病的药物列表，按预测分数排序
+# Predict treatments for a disease
 bash shell/prediction.sh treatments depression
+bash shell/prediction.sh --data-source full treatments "major depressive disorder"
 
-# Explain a specific prediction (预测解释 - GNNExplainer)
-# 输入: <药物名称> <疾病名称>
-# 输出: 
-#   - 预测分数
-#   - 贡献最大的边（药物-基因-疾病路径等）
-#   - 重要的生物学通路
-#   - 人类可读的解释文本
-# 注意: 药物和疾病名称必须存在于知识图谱中，支持模糊匹配
+# Explain a specific prediction (GNNExplainer)
 bash shell/prediction.sh explain metformin diabetes
+bash shell/prediction.sh --data-source full explain metformin diabetes
 
-# Batch explanation generation (批量生成解释)
-# 输入文件格式 (pairs.txt): 每行一个 "药物,疾病" 对
-#   metformin,diabetes
-#   quetiapine,schizophrenia
-#   fluoxetine,depression
-# 输出: JSON文件包含每对的解释结果
-bash shell/prediction.sh explain-batch pairs.txt explanations.json
+# Batch operations
+bash shell/prediction.sh batch drugs.txt results.json
+bash shell/prediction.sh explain-batch pairs.csv explanations.json
 
-# Evaluate model performance (评估模型性能)
-# 输出: MRR, Hits@1/5/10, AUROC, AUPRC 等指标
+# Evaluate model performance
 bash shell/prediction.sh evaluate
+bash shell/prediction.sh --data-source full evaluate
 
-# Interactive mode (交互式预测模式)
+# Interactive mode
 bash shell/prediction.sh interactive
-
-# Check dependencies (检查依赖和数据)
-bash shell/prediction.sh check
 ```
+
 
 #### Method 2: Python Script
 ```bash
-# Interactive demo
+# Interactive demo (default)
 python -m prediction.demo
 
-# Train and demo
-python -m prediction.demo --train --demo
-
-# Quick mode for testing
-python -m prediction.demo --quick --demo
+# Train model
+python -m prediction.demo --train --data-source full --pretrain-epochs 100
 
 # Predict for specific drug
-python -m prediction.demo --predict aripiprazole
+python -m prediction.demo --predict aripiprazole --data-source full
+
+# Predict treatments for disease
+python -m prediction.demo --treatments "bipolar disorder"
+
+# Explain prediction
+python -m prediction.demo --explain metformin diabetes
+
+# Batch explanation
+python -m prediction.demo --explain-batch pairs.csv output.json
+
+# Evaluate model
+python -m prediction.demo --evaluate --data-source full
 ```
 
 #### GNNExplainer Details

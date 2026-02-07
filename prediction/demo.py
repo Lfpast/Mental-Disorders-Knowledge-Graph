@@ -24,6 +24,7 @@ import os
 import sys
 import argparse
 from typing import Optional
+import torch
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -348,6 +349,35 @@ Examples:
         help='Predict repurposing for a specific drug'
     )
     parser.add_argument(
+        '--treatments',
+        type=str,
+        default=None,
+        help='Predict treatments for a specific disease'
+    )
+    parser.add_argument(
+        '--explain',
+        nargs=2,
+        metavar=('DRUG', 'DISEASE'),
+        help='Explain a specific drug-disease prediction'
+    )
+    parser.add_argument(
+        '--explain-batch',
+        nargs=2,
+        metavar=('INPUT_FILE', 'OUTPUT_FILE'),
+        help='Batch explanation generation (input: drug,disease csv)'
+    )
+    parser.add_argument(
+        '--batch-predict',
+        nargs=2,
+        metavar=('INPUT_FILE', 'OUTPUT_FILE'),
+        help='Batch prediction for drugs (input: one drug per line)'
+    )
+    parser.add_argument(
+        '--interactive',
+        action='store_true',
+        help='Run interactive prediction mode'
+    )
+    parser.add_argument(
         '--pretrain-epochs',
         type=int,
         default=50,
@@ -408,9 +438,31 @@ Examples:
             args.data_folder, "output", "prediction", "model.pt"
         )
         
+        # Check what data_source the model was trained with
+        checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
+        saved_data_source = checkpoint.get('data_source', None)
+        
+        # Determine data_source to use:
+        # 1. If user explicitly specified --data-source, use that
+        # 2. Otherwise, use saved_data_source from model (if available)
+        # 3. If neither, default to 'sampled'
+        if args.data_source != 'sampled':
+            # User explicitly changed from default
+            data_source_to_use = args.data_source
+            if saved_data_source and saved_data_source != args.data_source:
+                print(f"Warning: Model was trained with '{saved_data_source}', you specified '{args.data_source}'")
+        elif saved_data_source:
+            # Use saved value from model
+            data_source_to_use = saved_data_source
+        else:
+            # Default
+            data_source_to_use = 'sampled'
+        
         print(f"Loading model from {model_path}")
+        print(f"  Using data_source: {data_source_to_use}")
+        
         predictor = DrugRepurposingPredictor(data_folder=args.data_folder)
-        predictor.load_data(use_cache=True, data_source=args.data_source)
+        predictor.load_data(use_cache=True, data_source=data_source_to_use)
         predictor.load_model(model_path)
     else:
         # Train a quick model for demo
@@ -438,13 +490,111 @@ Examples:
             similar = [d for d in predictor.get_drug_names() if args.predict.lower() in d.lower()]
             if similar:
                 print(f"Similar drugs found: {', '.join(similar[:10])}")
-    
+
+    # Predict treatments for specific disease
+    if args.treatments:
+        try:
+            results = predictor.predict_treatments(args.treatments, top_k=20)
+            print_prediction_results(results, f"Predicted Treatments for: {args.treatments}")
+        except ValueError as e:
+            print(f"Error: {e}")
+            similar = [d for d in predictor.get_disease_names() if args.treatments.lower() in d.lower()]
+            if similar:
+                print(f"Similar diseases found: {', '.join(similar[:10])}")
+
+    # Explain prediction
+    if args.explain:
+        drug_name, disease_name = args.explain
+        print(f"\nGenerating explanation for {drug_name} -> {disease_name}...")
+        try:
+            explanation = predictor.explain_prediction(
+                drug_name=drug_name,
+                disease_name=disease_name,
+                epochs=100
+            )
+            print("\n" + "="*70)
+            if explanation.explanation_text:
+                print(explanation.explanation_text)
+            else:
+                print(f"Prediction Score: {explanation.prediction_score:.4f}")
+            
+            # Save explanation
+            output_file = os.path.join(
+                args.output_dir or args.data_folder, 
+                f"explanation_{drug_name}_{disease_name}.json".replace(" ", "_")
+            )
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(explanation.to_dict(), f, indent=2, ensure_ascii=False)
+            print("\n" + "="*70)
+            print(f"Explanation saved to: {output_file}")
+            
+        except Exception as e:
+            print(f"Error generating explanation: {e}")
+
+    # Batch explanation
+    if args.explain_batch:
+        input_file, output_file = args.explain_batch
+        print(f"\nBatch explaining from {input_file} to {output_file}...")
+        try:
+            pairs = []
+            with open(input_file, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and ',' in line:
+                         pairs.append(line.split(',', 1))
+            
+            print(f"Processing {len(pairs)} pairs...")
+            results = []
+            for drug, disease in pairs:
+                drug = drug.strip()
+                disease = disease.strip()
+                print(f"  Explaining: {drug} -> {disease}")
+                try:
+                    expl = predictor.explain_prediction(drug, disease, epochs=50)
+                    results.append(expl.to_dict())
+                except Exception as e:
+                    print(f"  Error: {e}")
+                    results.append({
+                        'drug': drug, 'disease': disease, 'error': str(e)
+                    })
+            
+            with open(output_file, 'w') as f:
+                json.dump(results, f, indent=2)
+            print(f"Results saved to {output_file}")
+            
+        except Exception as e:
+            print(f"Batch explanation error: {e}")
+
+    # Batch prediction
+    if args.batch_predict:
+        input_path, output_path = args.batch_predict
+        print(f"\nBatch predicting from {input_path} to {output_path}...")
+        try:
+            results = {}
+            with open(input_path, 'r') as f:
+                drugs = [line.strip() for line in f if line.strip()]
+            
+            for drug in drugs:
+                print(f"  Processing: {drug}")
+                try:
+                    preds = predictor.predict_repurposing(drug, top_k=20)
+                    results[drug] = [{'disease': d, 'score': s} for d, s, _ in preds]
+                except Exception as e:
+                    print(f"  Error: {e}")
+            
+            with open(output_path, 'w') as f:
+                json.dump(results, f, indent=2)
+            print(f"Results saved to {output_path}")
+            
+        except Exception as e:
+            print(f"Batch prediction error: {e}")
+
     # Demo mode
     if args.demo:
         demo_mode(predictor)
     
-    # Interactive mode (default if no other action)
-    if not (args.train or args.evaluate or args.predict or args.demo):
+    # Interactive mode (default if no other action or explicitly requested)
+    if args.interactive or not (args.train or args.evaluate or args.predict or args.treatments or args.explain or args.explain_batch or args.batch_predict or args.demo):
         interactive_mode(predictor)
 
 

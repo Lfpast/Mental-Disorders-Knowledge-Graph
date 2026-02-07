@@ -961,14 +961,25 @@ class DrugRepurposingPredictor:
         
         path = path or os.path.join(self.output_dir, "model.pt")
         
+        # Save data_source so we know which dataset the model was trained on
+        data_source = getattr(self.data_loader, 'data_source', 'sampled') if self.data_loader else 'sampled'
+        
         save_dict = {
             'model_state_dict': self.model.state_dict(),
             'config': self.config.to_dict(),
             'is_trained': self.is_trained,
+            'data_source': data_source,
+            'graph_info': {
+                'num_nodes': {ntype: self.G.num_nodes(ntype) for ntype in self.G.ntypes},
+                'num_edges': self.G.num_edges(),
+                'num_etypes': len(self.G.etypes),
+            }
         }
         
         torch.save(save_dict, path)
         print(f"Model saved to {path}")
+        print(f"  Data source: {data_source}")
+        print(f"  Graph: {sum(save_dict['graph_info']['num_nodes'].values())} nodes, {save_dict['graph_info']['num_edges']} edges")
         
         return path
     
@@ -978,11 +989,32 @@ class DrugRepurposingPredictor:
         
         Args:
             path: Path to saved model
+        
+        Note:
+            The data must be loaded with the same data_source used during training.
+            The model saves this information and will warn if there's a mismatch.
         """
         if self.data_loader is None or self.G is None:
             raise ValueError("Data not loaded. Call load_data() first.")
         
         checkpoint = torch.load(path, map_location=self.device, weights_only=False)
+        
+        # Check data_source compatibility
+        saved_data_source = checkpoint.get('data_source', 'unknown')
+        current_data_source = getattr(self.data_loader, 'data_source', 'sampled')
+        
+        if saved_data_source != 'unknown' and saved_data_source != current_data_source:
+            saved_info = checkpoint.get('graph_info', {})
+            current_nodes = sum(self.G.num_nodes(ntype) for ntype in self.G.ntypes)
+            saved_nodes = sum(saved_info.get('num_nodes', {}).values()) if saved_info else 'unknown'
+            
+            raise ValueError(
+                f"Data source mismatch!\n"
+                f"  Model was trained with: {saved_data_source} ({saved_nodes} nodes)\n"
+                f"  Current data source: {current_data_source} ({current_nodes} nodes)\n"
+                f"  Solution: Load data with the same source:\n"
+                f"    predictor.load_data(data_source='{saved_data_source}')"
+            )
         
         self.config = TrainingConfig.from_dict(checkpoint['config'])
         self._initialize_model()
