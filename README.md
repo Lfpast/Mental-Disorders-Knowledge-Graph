@@ -325,40 +325,25 @@ The system implements a Graph Neural Network (GNN) approach with metric learning
 #### Method 1: Shell Script
 ```bash
 # General Syntax
-# bash shell/prediction.sh [--data-source SOURCE] <command> [options]
+# bash shell/prediction.sh [--data-source SOURCE] [--model-file MODEL] <command> [options]
 # SOURCE options: sampled (default), full, full_aug, train
 
-# Train the model
+# Train the model (specify model output path indirectly or rename later)
 bash shell/prediction.sh train
-bash shell/prediction.sh --data-source full train  # Train on full dataset
-
-# Quick training (skip pretrain, fewer epochs)
-bash shell/prediction.sh quick
+bash shell/prediction.sh --data-source full train
 
 # Predict new indications for a drug
 bash shell/prediction.sh predict quetiapine
-bash shell/prediction.sh --data-source full predict quetiapine
+bash shell/prediction.sh --data-source full --model-file "models/output/prediction/model_full.pt" predict quetiapine
 
 # Predict treatments for a disease
 bash shell/prediction.sh treatments depression
-bash shell/prediction.sh --data-source full treatments "major depressive disorder"
+bash shell/prediction.sh --data-source full --model-file "../model.pt" treatments "major depressive disorder"
 
-# Explain a specific prediction (GNNExplainer)
+# Explain a specific prediction
 bash shell/prediction.sh explain metformin diabetes
-bash shell/prediction.sh --data-source full explain metformin diabetes
-
-# Batch operations
-bash shell/prediction.sh batch drugs.txt results.json
-bash shell/prediction.sh explain-batch pairs.csv explanations.json
-
-# Evaluate model performance
-bash shell/prediction.sh evaluate
-bash shell/prediction.sh --data-source full evaluate
-
-# Interactive mode
-bash shell/prediction.sh interactive
+bash shell/prediction.sh --data-source full --model-file "model.pt" explain metformin diabetes
 ```
-
 
 #### Method 2: Python Script
 ```bash
@@ -368,20 +353,8 @@ python -m prediction.demo
 # Train model
 python -m prediction.demo --train --data-source full --pretrain-epochs 100
 
-# Predict for specific drug
-python -m prediction.demo --predict aripiprazole --data-source full
-
-# Predict treatments for disease
-python -m prediction.demo --treatments "bipolar disorder"
-
-# Explain prediction
-python -m prediction.demo --explain metformin diabetes
-
-# Batch explanation
-python -m prediction.demo --explain-batch pairs.csv output.json
-
-# Evaluate model
-python -m prediction.demo --evaluate --data-source full
+# Predict with specific model file
+python -m prediction.demo --predict aripiprazole --data-source full --model-path "./my_model.pt"
 ```
 
 #### GNNExplainer Details

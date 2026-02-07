@@ -323,9 +323,9 @@ Examples:
         help='Output directory for models and results'
     )
     parser.add_argument(
-        '--model-path', '-m',
+        '--model-path', '--model-file', '-m',
         default=None,
-        help='Path to pre-trained model'
+        help='Path to specific pre-trained model file (e.g. model.pt)'
     )
     parser.add_argument(
         '--train', '-t',

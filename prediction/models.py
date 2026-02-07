@@ -1002,7 +1002,10 @@ class LinkPredictor(nn.Module):
         rel_emb = self.model.pred.W[rel_idx]
         
         # DistMult score
-        score = (drug_emb * rel_emb * disease_emb).sum()
+        # Scale by 1/sqrt(d) to prevent sigmoid saturation
+        dim = drug_emb.shape[-1]
+        scaling = 1.0 / math.sqrt(dim)
+        score = (drug_emb * rel_emb * disease_emb).sum() * scaling
         return torch.sigmoid(score).item()
     
     def predict_all_drugs_for_disease(
@@ -1032,7 +1035,10 @@ class LinkPredictor(nn.Module):
         rel_emb = self.model.pred.W[rel_idx]
         
         # Score all drugs
-        scores = (drug_embs * rel_emb * disease_emb.unsqueeze(0)).sum(dim=-1)
+        # Scale by 1/sqrt(d) to prevent sigmoid saturation
+        dim = drug_embs.shape[-1]
+        scaling = 1.0 / math.sqrt(dim)
+        scores = (drug_embs * rel_emb * disease_emb.unsqueeze(0)).sum(dim=-1) * scaling
         scores = torch.sigmoid(scores)
         
         # Sort
@@ -1068,7 +1074,10 @@ class LinkPredictor(nn.Module):
         rel_emb = self.model.pred.W[rel_idx]
         
         # Score all diseases
-        scores = (drug_emb.unsqueeze(0) * rel_emb * disease_embs).sum(dim=-1)
+        # Scale by 1/sqrt(d) to prevent sigmoid saturation
+        dim = drug_emb.shape[-1]
+        scaling = 1.0 / math.sqrt(dim)
+        scores = (drug_emb.unsqueeze(0) * rel_emb * disease_embs).sum(dim=-1) * scaling
         scores = torch.sigmoid(scores)
         
         # Sort

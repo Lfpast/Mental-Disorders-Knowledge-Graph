@@ -67,6 +67,7 @@ NUM_HOPS=2
 # Data source (can be overridden with --data-source)
 # Options: sampled, full, full_aug, train
 DATA_SOURCE="sampled"
+MODEL_FILE=""
 
 # ==============================================================================
 # Helper Functions
@@ -202,14 +203,22 @@ train_model() {
     
     cd "$PROJECT_ROOT"
     
-    python3 -m prediction.demo \
+    # Construct base command
+    CMD="python3 -m prediction.demo \
         --train \
-        --data-folder "$DATA_DIR" \
-        --output-dir "$OUTPUT_DIR" \
+        --data-folder \"$DATA_DIR\" \
+        --output-dir \"$OUTPUT_DIR\" \
         --pretrain-epochs $PRETRAIN \
         --finetune-epochs $FINETUNE \
-        --data-source "$LOCAL_DATA_SOURCE" \
-        $SKIP_PRETRAIN
+        --data-source \"$LOCAL_DATA_SOURCE\" \
+        $SKIP_PRETRAIN"
+        
+    # Add model file arg if provided (though mostly used for loading, good for consistency)
+    if [ ! -z "$MODEL_FILE" ]; then
+        CMD="$CMD --model-path \"$MODEL_FILE\""
+    fi
+    
+    eval $CMD
     
     print_step "Model saved to: $OUTPUT_DIR/model.pt"
 }
@@ -226,7 +235,7 @@ predict_drug() {
     local DRUG_NAME=$1
     
     if [ -z "$DRUG_NAME" ]; then
-        echo "Usage: $0 predict <drug_name> [--data-source SOURCE]"
+        echo "Usage: $0 predict <drug_name>"
         echo "Example: $0 predict quetiapine"
         exit 1
     fi
@@ -235,10 +244,16 @@ predict_drug() {
     
     cd "$PROJECT_ROOT"
     
-    python3 -m prediction.demo \
-        --predict "$DRUG_NAME" \
-        --data-folder "$DATA_DIR" \
-        --data-source "$DATA_SOURCE"
+    CMD="python3 -m prediction.demo \
+        --predict \"$DRUG_NAME\" \
+        --data-folder \"$DATA_DIR\" \
+        --data-source \"$DATA_SOURCE\""
+        
+    if [ ! -z "$MODEL_FILE" ]; then
+        CMD="$CMD --model-path \"$MODEL_FILE\""
+    fi
+    
+    eval $CMD
 }
 
 ##
@@ -258,10 +273,16 @@ predict_disease() {
     
     cd "$PROJECT_ROOT"
     
-    python3 -m prediction.demo \
-        --treatments "$DISEASE_NAME" \
-        --data-folder "$DATA_DIR" \
-        --data-source "$DATA_SOURCE"
+    CMD="python3 -m prediction.demo \
+        --treatments \"$DISEASE_NAME\" \
+        --data-folder \"$DATA_DIR\" \
+        --data-source \"$DATA_SOURCE\""
+        
+    if [ ! -z "$MODEL_FILE" ]; then
+        CMD="$CMD --model-path \"$MODEL_FILE\""
+    fi
+    
+    eval $CMD
 }
 
 # ==============================================================================
@@ -278,7 +299,7 @@ explain_prediction() {
     local DISEASE_NAME=$2
     
     if [ -z "$DRUG_NAME" ] || [ -z "$DISEASE_NAME" ]; then
-        echo "Usage: $0 explain <drug_name> <disease_name> [--data-source SOURCE]"
+        echo "Usage: $0 explain <drug_name> <disease_name>"
         echo "Example: $0 explain metformin 'type 2 diabetes'"
         exit 1
     fi
@@ -287,10 +308,16 @@ explain_prediction() {
     
     cd "$PROJECT_ROOT"
     
-    python3 -m prediction.demo \
-        --explain "$DRUG_NAME" "$DISEASE_NAME" \
-        --data-folder "$DATA_DIR" \
-        --data-source "$DATA_SOURCE"
+    CMD="python3 -m prediction.demo \
+        --explain \"$DRUG_NAME\" \"$DISEASE_NAME\" \
+        --data-folder \"$DATA_DIR\" \
+        --data-source \"$DATA_SOURCE\""
+        
+    if [ ! -z "$MODEL_FILE" ]; then
+        CMD="$CMD --model-path \"$MODEL_FILE\""
+    fi
+    
+    eval $CMD
 }
 
 ##
@@ -303,7 +330,7 @@ explain_batch() {
     local OUTPUT_FILE=$2
     
     if [ -z "$INPUT_FILE" ] || [ -z "$OUTPUT_FILE" ]; then
-        echo "Usage: $0 explain-batch <input_file> <output_file> [--data-source SOURCE]"
+        echo "Usage: $0 explain-batch <input_file> <output_file>"
         echo "Input file should contain drug,disease pairs, one per line"
         exit 1
     fi
@@ -312,10 +339,16 @@ explain_batch() {
     
     cd "$PROJECT_ROOT"
     
-    python3 -m prediction.demo \
-        --explain-batch "$INPUT_FILE" "$OUTPUT_FILE" \
-        --data-folder "$DATA_DIR" \
-        --data-source "$DATA_SOURCE"
+    CMD="python3 -m prediction.demo \
+        --explain-batch \"$INPUT_FILE\" \"$OUTPUT_FILE\" \
+        --data-folder \"$DATA_DIR\" \
+        --data-source \"$DATA_SOURCE\""
+
+    if [ ! -z "$MODEL_FILE" ]; then
+        CMD="$CMD --model-path \"$MODEL_FILE\""
+    fi
+    
+    eval $CMD
 }
 
 # ==============================================================================
@@ -330,10 +363,16 @@ evaluate_model() {
     
     cd "$PROJECT_ROOT"
     
-    python3 -m prediction.demo \
+    CMD="python3 -m prediction.demo \
         --evaluate \
-        --data-folder "$DATA_DIR" \
-        --data-source "$DATA_SOURCE"
+        --data-folder \"$DATA_DIR\" \
+        --data-source \"$DATA_SOURCE\""
+
+    if [ ! -z "$MODEL_FILE" ]; then
+        CMD="$CMD --model-path \"$MODEL_FILE\""
+    fi
+    
+    eval $CMD
     
     print_step "Evaluation results saved to: $OUTPUT_DIR/evaluation_results.json"
 }
@@ -350,10 +389,16 @@ run_demo() {
     
     cd "$PROJECT_ROOT"
     
-    python3 -m prediction.demo \
+    CMD="python3 -m prediction.demo \
         --demo \
-        --data-folder "$DATA_DIR" \
-        --data-source "$DATA_SOURCE"
+        --data-folder \"$DATA_DIR\" \
+        --data-source \"$DATA_SOURCE\""
+        
+    if [ ! -z "$MODEL_FILE" ]; then
+        CMD="$CMD --model-path \"$MODEL_FILE\""
+    fi
+    
+    eval $CMD
 }
 
 ##
@@ -364,10 +409,16 @@ run_interactive() {
     
     cd "$PROJECT_ROOT"
     
-    python3 -m prediction.demo \
+    CMD="python3 -m prediction.demo \
         --interactive \
-        --data-folder "$DATA_DIR" \
-        --data-source "$DATA_SOURCE"
+        --data-folder \"$DATA_DIR\" \
+        --data-source \"$DATA_SOURCE\""
+
+    if [ ! -z "$MODEL_FILE" ]; then
+        CMD="$CMD --model-path \"$MODEL_FILE\""
+    fi
+    
+    eval $CMD
 }
 
 # ==============================================================================
@@ -404,7 +455,7 @@ batch_predict() {
     local OUTPUT_FILE=$2
     
     if [ -z "$INPUT_FILE" ] || [ -z "$OUTPUT_FILE" ]; then
-        echo "Usage: $0 batch <input_file> <output_file> [--data-source SOURCE]"
+        echo "Usage: $0 batch <input_file> <output_file>"
         echo "Input file should contain one drug name per line"
         exit 1
     fi
@@ -413,10 +464,16 @@ batch_predict() {
     
     cd "$PROJECT_ROOT"
     
-    python3 -m prediction.demo \
-        --batch-predict "$INPUT_FILE" "$OUTPUT_FILE" \
-        --data-folder "$DATA_DIR" \
-        --data-source "$DATA_SOURCE"
+    CMD="python3 -m prediction.demo \
+        --batch-predict \"$INPUT_FILE\" \"$OUTPUT_FILE\" \
+        --data-folder \"$DATA_DIR\" \
+        --data-source \"$DATA_SOURCE\""
+
+    if [ ! -z "$MODEL_FILE" ]; then
+        CMD="$CMD --model-path \"$MODEL_FILE\""
+    fi
+    
+    eval $CMD
 }
 
 # ==============================================================================
@@ -426,14 +483,11 @@ batch_predict() {
 show_help() {
     echo "MDKG Drug Repurposing Prediction Pipeline"
     echo ""
-    echo "Usage: $0 [--data-source SOURCE] <command> [options]"
+    echo "Usage: $0 [--data-source SOURCE] [--model-file FILE] <command> [options]"
     echo ""
     echo "Global Options:"
-    echo "  --data-source SOURCE  Set data source for all commands:"
-    echo "                          sampled  - Active Learning sampled data (default)"
-    echo "                          full     - Full MDKG dataset"
-    echo "                          full_aug - Full augmented dataset"
-    echo "                          train    - Training split only"
+    echo "  --data-source SOURCE  Set data source (sampled, full, full_aug, train)"
+    echo "  --model-file FILE     Path to specific model file (optional)"
     echo ""
     echo "Commands:"
     echo "  train [options]           Train the drug repurposing model"
@@ -454,18 +508,8 @@ show_help() {
     echo "  --pretrain-epochs N  Set pre-training epochs (default: $PRETRAIN_EPOCHS)"
     echo "  --finetune-epochs N  Set fine-tuning epochs (default: $FINETUNE_EPOCHS)"
     echo ""
-    echo "Explainability Options:"
-    echo "  The explain command uses GNNExplainer to identify important"
-    echo "  subgraph structures that contribute to predictions."
-    echo "  Reference: https://arxiv.org/abs/1903.03894"
-    echo ""
-    echo "Examples:"
-    echo "  $0 train --quick"
-    echo "  $0 --data-source full train"
-    echo "  $0 --data-source full_aug predict quetiapine"
-    echo "  $0 --data-source sampled treatments depression"
-    echo "  $0 --data-source full_aug explain metformin 'type 2 diabetes'"
-    echo "  $0 batch drugs.txt results.json"
+    echo "Example with explicit model:"
+    echo "  $0 --data-source full --model-file my_model.pt predict quetiapine"
 }
 
 main() {
@@ -475,6 +519,10 @@ main() {
         case $1 in
             --data-source)
                 DATA_SOURCE="$2"
+                shift 2
+                ;;
+            --model-file)
+                MODEL_FILE="$2"
                 shift 2
                 ;;
             *)
