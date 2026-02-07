@@ -222,12 +222,27 @@ def train_model(
     output_dir: Optional[str] = None,
     pretrain_epochs: int = 50,
     finetune_epochs: int = 200,
-    skip_pretrain: bool = False
+    skip_pretrain: bool = False,
+    data_source: str = 'sampled'
 ) -> DrugRepurposingPredictor:
-    """Train the drug repurposing model."""
+    """Train the drug repurposing model.
+    
+    Args:
+        data_folder: Path to data folder
+        output_dir: Output directory for models
+        pretrain_epochs: Number of pretraining epochs
+        finetune_epochs: Number of finetuning epochs
+        skip_pretrain: Whether to skip pretraining phase
+        data_source: Data source to use for training. Options:
+            - 'sampled': Active Learning sampled data (default)
+            - 'full': Full MDKG dataset
+            - 'full_aug': Full augmented dataset  
+            - 'train': Training split only
+    """
     print("\n" + "="*60)
     print("  Training Drug Repurposing Model")
     print("="*60)
+    print(f"  Data source: {data_source}")
     
     config = TrainingConfig(
         pretrain_epochs=pretrain_epochs,
@@ -245,7 +260,7 @@ def train_model(
         output_dir=output_dir
     )
     
-    predictor.load_data(split='random', seed=42)
+    predictor.load_data(split='random', seed=42, data_source=data_source)
     predictor.train(skip_pretrain=skip_pretrain)
     
     # Save model
@@ -350,6 +365,14 @@ Examples:
         help='Skip pretraining phase'
     )
     parser.add_argument(
+        '--data-source',
+        type=str,
+        default='sampled',
+        choices=['sampled', 'full', 'full_aug', 'train'],
+        help='Data source for training: sampled (AL sampled, default), '
+             'full (complete dataset), full_aug (augmented), train (train split)'
+    )
+    parser.add_argument(
         '--quick',
         action='store_true',
         help='Quick training mode (fewer epochs for testing)'
@@ -374,7 +397,8 @@ Examples:
             output_dir=args.output_dir,
             pretrain_epochs=args.pretrain_epochs,
             finetune_epochs=args.finetune_epochs,
-            skip_pretrain=args.skip_pretrain
+            skip_pretrain=args.skip_pretrain,
+            data_source=args.data_source
         )
     elif args.model_path or os.path.exists(
         os.path.join(args.data_folder, "output", "prediction", "model.pt")
@@ -386,7 +410,7 @@ Examples:
         
         print(f"Loading model from {model_path}")
         predictor = DrugRepurposingPredictor(data_folder=args.data_folder)
-        predictor.load_data(use_cache=True)
+        predictor.load_data(use_cache=True, data_source=args.data_source)
         predictor.load_model(model_path)
     else:
         # Train a quick model for demo
@@ -396,7 +420,8 @@ Examples:
             output_dir=args.output_dir,
             pretrain_epochs=5,
             finetune_epochs=20,
-            skip_pretrain=True
+            skip_pretrain=True,
+            data_source=args.data_source
         )
     
     # Evaluate if requested

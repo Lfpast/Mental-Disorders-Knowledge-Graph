@@ -492,7 +492,9 @@ Output: Community partition
 
 ### 2.1 论文背景
 
-**参考论文**: [TxGNN: Zero-shot prediction of therapeutic use of drugs with geometric deep learning](https://www.nature.com/articles/s41591-024-03233-x) (Nature Medicine, 2024)
+**参考论文**: 
+- [TxGNN: Zero-shot prediction of therapeutic use of drugs with geometric deep learning](https://www.nature.com/articles/s41591-023-02233-x) (Nature Medicine, 2024)
+- [GNNExplainer: Generating Explanations for Graph Neural Networks](https://arxiv.org/abs/1903.03894) (NeurIPS 2019)
 
 #### 2.1.1 问题定义
 
@@ -501,15 +503,28 @@ Output: Community partition
 - **罕见病预测**: 对于训练数据稀少的疾病如何做出准确预测
 - **零样本学习**: 如何预测从未在训练集中出现的药物-疾病关联
 - **异构图建模**: 如何有效整合多类型实体和关系
+- **预测可解释性**: 如何解释模型的预测结果，提供临床可信的证据
 
 #### 2.1.2 TxGNN 创新点
 
 | 创新 | 描述 |
 |------|------|
 | **疾病原型学习** | 利用相似疾病的知识增强罕见病预测 |
-| **稀有度加权** | 对低频疾病给予更高的原型聚合权重 |
+| **稀有度加权** | 对低频疾病给予更高的原型聚合权重 (λ=0.7) |
 | **度量学习** | 通过相似性计算实现知识迁移 |
 | **两阶段训练** | 预训练 + 微调策略 |
+| **多种相似度度量** | embedding, profile, BERT, profile+embedding |
+
+#### 2.1.3 本模块改进
+
+基于 TxGNN 论文，我们在 MDKG 项目中进行了以下改进：
+
+| 改进 | 描述 |
+|------|------|
+| **GNNExplainer 集成** | 基于 arxiv:1903.03894 实现预测可解释性 |
+| **Mini-batch 训练** | 支持大规模知识图谱的可扩展训练 |
+| **邻居采样** | 使用 DGL NeighborSampler 降低内存消耗 |
+| **稀疏消息传递** | 优化大图上的 GNN 计算效率 |
 
 ### 2.2 核心算法
 
@@ -529,26 +544,26 @@ $$
 - $W_0^{(l)}$: 自环（自身信息保留）的变换矩阵
 - $\sigma$: 激活函数（如 ReLU）
 
-**实现代码**:
+**3层残差架构**（对齐TxGNN论文）:
 
 ```python
-class HeteroRGCNLayer(nn.Module):
-    def forward(self, G, feat_dict):
-        # 为每种边类型构建消息传递函数
-        funcs = {}
-        for src_type, etype, dst_type in G.canonical_etypes:
-            if G.num_edges((src_type, etype, dst_type)) > 0:
-                funcs[(src_type, etype, dst_type)] = (
-                    fn.copy_u('h', 'm'),   # 复制源节点特征作为消息
-                    fn.mean('m', 'h_agg')  # 聚合消息取均值
-                )
+class HeteroRGCN(nn.Module):
+    def encode(self, G):
+        h = self.get_node_embeddings(G)
         
-        # 批量更新所有节点类型
-        G.multi_update_all(funcs, 'mean')
+        # Layer 1
+        h1 = self.layer1(G, h)
+        h1 = {k: self.dropout(v) for k, v in h1.items()}
         
-        # 应用层归一化和激活函数
-        return {ntype: self.layer_norm(F.relu(G.nodes[ntype].data['h_agg']))
-                for ntype in G.ntypes}
+        # Layer 2 with residual connection
+        h2 = self.layer2(G, h1)
+        h2 = {k: self.dropout(h2[k]) + h1[k] for k in h2}  # Residual
+        
+        # Layer 3 with residual connection
+        h3 = self.layer3(G, h2)
+        h3 = {k: h3[k] + self.residual_proj[k](h2[k]) for k in h3}
+        
+        return h3
 ```
 
 #### 2.2.2 DistMult 链接预测
@@ -559,15 +574,19 @@ $$
 \text{score}(h, r, t) = \langle e_h, W_r, e_t \rangle = \sum_i e_h^{(i)} \cdot W_r^{(i)} \cdot e_t^{(i)}
 $$
 
-其中 $e_h, e_t$ 是头尾实体嵌入，$W_r$ 是关系嵌入（对角矩阵形式）。
-
-**训练目标** - 二元交叉熵损失：
+**训练目标** - BCE + Margin Ranking Loss:
 
 $$
-\mathcal{L} = -\frac{1}{|E|} \sum_{(h,r,t) \in E} \left[ y \log(\sigma(s)) + (1-y) \log(1-\sigma(s)) \right]
+\mathcal{L} = \mathcal{L}_{BCE} + 0.5 \times \mathcal{L}_{Margin}
 $$
 
-其中 $y \in \{0, 1\}$ 表示正/负样本，$\sigma$ 是 sigmoid 函数。
+$$
+\mathcal{L}_{BCE} = -\frac{1}{|E|} \sum_{(h,r,t)} \left[ y \log(\sigma(s)) + (1-y) \log(1-\sigma(s)) \right]
+$$
+
+$$
+\mathcal{L}_{Margin} = \max(0, margin - s_{pos} + s_{neg})
+$$
 
 #### 2.2.3 疾病原型学习 (Disease Prototype Learning)
 
@@ -578,35 +597,38 @@ $$
 │                   Disease Prototype Learning                │
 └─────────────────────────────────────────────────────────────┘
 
-Step 1: 计算疾病相似度
+Step 1: 计算疾病相似度 (sim_measure 选项)
 ┌─────────────────────────────────────────────────────────────┐
-│  Embedding-based:  sim(d_i, d_j) = cos(e_{d_i}, e_{d_j})    │
-│  Profile-based:    sim(d_i, d_j) = cos(p_{d_i}, p_{d_j})    │
-│                    其中 p = [#genes, #symptoms, #drugs, ...]│
+│  embedding:    sim(d_i, d_j) = cos(e_{d_i}, e_{d_j})        │
+│  profile:      sim(d_i, d_j) = cos(p_{d_i}, p_{d_j})        │
+│  bert:         sim(d_i, d_j) = cos(BERT(d_i), BERT(d_j))    │
+│  profile+embedding: 结合两种方式                             │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 Step 2: 选择 Top-K 相似疾病作为原型
 ┌─────────────────────────────────────────────────────────────┐
 │  对于疾病 d_q, 找到 K 个最相似的疾病:                         │
-│  Prototype = {d_1, d_2, ..., d_K} 其中 sim(d_q, d_i) 最高   │
+│  Prototype = {d_1, d_2, ..., d_K}                           │
+│  其中 sim(d_q, d_i) 最高且 d_i ≠ d_q                        │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
-Step 3: 聚合原型嵌入
+Step 3: 聚合原型嵌入 (agg_measure 选项)
 ┌─────────────────────────────────────────────────────────────┐
-│  e_proto = Σ_i softmax(sim_i) × e_{d_i}                     │
+│  rarity:  α = exp(-λ × degree(d_q)), λ=0.7 (TxGNN default)  │
+│  avg:     α = 0.5                                           │
+│  learn:   α = sigmoid(W_gate × [e_q; e_proto])              │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
-Step 4: 稀有度加权融合
+Step 4: 最终嵌入
 ┌─────────────────────────────────────────────────────────────┐
-│  α = exp(-λ × degree(d_q))     # 低度节点权重高              │
-│  e_final = (1-α) × e_{d_q} + α × e_proto                    │
+│  e_final = (1-α) × e_{d_q} + α × Σ softmax(sim_i) × e_{d_i} │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-**数学表达**:
+**数学表达** (论文 Eq. 3):
 
 $$
 e_{d}^{aug} = (1 - \alpha_d) \cdot e_d + \alpha_d \cdot \sum_{k=1}^{K} \frac{\exp(s_{d,k})}{\sum_{j=1}^{K} \exp(s_{d,j})} \cdot e_{p_k}
@@ -615,151 +637,232 @@ $$
 其中稀有度权重：
 
 $$
-\alpha_d = \exp(-\lambda \cdot \text{degree}(d))
+\alpha_d = \exp(-\lambda \cdot \text{degree}(d)), \quad \lambda = 0.7
+$$
+
+### 2.3 GNNExplainer 可解释性模块
+
+#### 2.3.1 算法原理
+
+基于论文 [GNNExplainer: Generating Explanations for Graph Neural Networks](https://arxiv.org/abs/1903.03894) (NeurIPS 2019)。
+
+GNNExplainer 通过优化边掩码来识别对预测最重要的子图：
+
+$$
+\max_{M} MI(Y, (G_S, X_S)) = H(Y) - H(Y | G = G_S, X = X_S)
 $$
 
 其中：
-- $s_{d,k} = \text{sim}(d, p_k)$ 是疾病 $d$ 与原型疾病 $p_k$ 的相似度
-- $e_{p_k}$ 是第 $k$ 个原型疾病的嵌入向量
-- $\lambda = 0.7$ 控制衰减速度，低度数疾病（罕见病）获得更高的 $\alpha$
-- 分母 $\sum_{j=1}^{K} \exp(s_{d,j})$ 的求和范围为所有 $K$ 个原型，确保 softmax 正确归一化
+- $M \in [0,1]^{|E|}$: 边掩码（每条边的重要性权重）
+- $G_S$: 重要子图
+- $X_S$: 重要节点特征
 
-#### 2.2.4 负采样策略
+**损失函数**:
 
-```python
-class NegativeSampler:
-    """
-    负边采样策略
-    
-    对于正边 (h, r, t):
-    - Tail corruption: 保持 (h, r)，随机采样 t' ≠ t
-    - Head corruption: 保持 (r, t)，随机采样 h' ≠ h
-    """
-    def sample(self, pos_graph):
-        neg_edges = {}
-        for etype in pos_graph.canonical_etypes:
-            src, dst = pos_graph.edges(etype=etype)
-            n_pos = len(src)
-            
-            # 随机生成负样本尾实体
-            neg_dst = torch.randint(
-                0, self.num_nodes[dst_type], 
-                (n_pos * self.neg_ratio,)
-            )
-            
-            neg_edges[etype] = (src.repeat(self.neg_ratio), neg_dst)
-        
-        return dgl.heterograph(neg_edges)
+$$
+\mathcal{L} = -\log P_{\Phi}(Y | G \odot \sigma(M)) + \lambda_1 \|M\|_1 + \lambda_2 H(M)
+$$
+
+其中：
+- 第一项：预测损失（最大化掩码后的预测分数）
+- $\lambda_1 \|M\|_1$: 稀疏性正则化（鼓励小子图）
+- $\lambda_2 H(M)$: 熵正则化（鼓励二值化掩码）
+
+#### 2.3.2 实现架构
+
+```
+prediction/explainer.py
+├── ExplanationResult      # 解释结果数据类
+│   ├── edge_mask          # 边重要性掩码
+│   ├── edge_importance    # 边重要性排序
+│   ├── prediction_score   # 原始预测分数
+│   ├── fidelity           # 解释保真度
+│   ├── pathways           # 重要路径列表
+│   └── metadata           # 元数据
+│
+└── GNNExplainer           # 解释器主类
+    ├── _initialize_masks()    # 初始化可学习掩码
+    ├── _extract_subgraph()    # 提取计算子图
+    ├── _masked_forward()      # 带掩码的前向传播
+    ├── _loss()                # 计算解释损失
+    ├── explain()              # 生成解释
+    └── extract_important_pathways()  # 提取重要路径
 ```
 
-### 2.3 实现架构
+#### 2.3.3 使用示例
 
-#### 2.3.1 模块组成
+```python
+from prediction import DrugRepurposingPredictor
+
+# 初始化并训练模型
+predictor = DrugRepurposingPredictor()
+predictor.load_data()
+predictor.train()
+
+# 生成预测解释
+explanation = predictor.explain_prediction(
+    drug_name="metformin",
+    disease_name="type 2 diabetes",
+    num_hops=2,
+    epochs=100
+)
+
+# 查看结果
+print(f"预测分数: {explanation.prediction_score:.4f}")
+print(f"解释保真度: {explanation.fidelity:.4f}")
+print(f"重要边数量: {len([e for e in explanation.edge_importance if e[2] > 0.1])}")
+
+# 重要路径
+for pathway in explanation.pathways[:3]:
+    print(f"路径: {pathway}")
+```
+
+#### 2.3.4 解释输出格式
+
+```python
+ExplanationResult:
+  edge_mask: Tensor[num_edges]           # 每条边的重要性 [0,1]
+  edge_importance: List[Tuple[           # 排序的边重要性
+    src_type, dst_type, importance, relation, src_idx, dst_idx
+  ]]
+  prediction_score: float                # 原始预测分数
+  masked_score: float                    # 掩码后预测分数
+  fidelity: float                        # |orig - masked| / orig
+  pathways: List[str]                    # 重要路径描述
+  metadata: Dict                         # 包含drug_name, disease_name等
+```
+
+### 2.4 可扩展性优化
+
+#### 2.4.1 Mini-batch 训练
+
+对于大规模知识图谱（>100万边），使用 DGL 的邻居采样实现 mini-batch 训练：
+
+```
+时间复杂度比较：
+┌─────────────────────────────────────────────────────────────┐
+│  Full-batch:    O(|V| × |E| × L)     每epoch处理整个图       │
+│  Mini-batch:    O(B × F^L × L)       每batch只处理采样子图   │
+└─────────────────────────────────────────────────────────────┘
+
+其中:
+  |V|: 节点数
+  |E|: 边数  
+  L: GNN层数
+  B: batch size
+  F: fanout (每层采样的邻居数)
+```
+
+**实现**:
+
+```python
+class MiniBatchEdgeSampler:
+    def __init__(self, G, fanouts=[15, 10, 5], batch_size=1024):
+        self.sampler = NeighborSampler(fanouts)
+        
+    def create_dataloader(self, edge_dict, negative_sampler=None):
+        sampler = as_edge_prediction_sampler(
+            self.sampler,
+            negative_sampler=negative_sampler
+        )
+        return DGLDataLoader(
+            self.G, edge_dict, sampler,
+            batch_size=self.batch_size,
+            shuffle=True
+        )
+```
+
+#### 2.4.2 稀疏消息传递
+
+使用 DGL 的稀疏操作优化内存使用：
+
+```python
+class SparseMessagePassing(nn.Module):
+    def forward(self, block, feat):
+        with block.local_scope():
+            block.srcdata['h'] = self.linear(feat)
+            block.update_all(fn.copy_u('h', 'm'), fn.mean('m', 'h'))
+            return block.dstdata['h']
+```
+
+#### 2.4.3 疾病Profile缓存
+
+预计算并缓存疾病profile以加速相似度计算：
+
+```python
+def compute_disease_profiles_batch(G, disease_indices, cache=None):
+    """批量计算疾病profile，支持缓存"""
+    cache = cache or {}
+    for idx in disease_indices:
+        if idx not in cache:
+            cache[idx] = compute_disease_profile(G, idx)
+    return cache
+```
+
+### 2.5 实现架构
+
+#### 2.5.1 模块组成
 
 ```
 prediction/
 ├── __init__.py           # 包导出
 ├── data_loader.py        # 数据加载与图构建
 ├── models.py             # GNN 模型定义
+│   ├── HeteroRGCN            # 3层残差RGCN
+│   ├── HeteroRGCNLayer       # 基础RGCN层
+│   ├── AttentionHeteroRGCNLayer  # 注意力RGCN层
+│   ├── DistMultPredictor     # 链接预测+原型学习
+│   ├── MiniBatchEdgeSampler  # Mini-batch采样器
+│   └── SparseMessagePassing  # 稀疏消息传递
 ├── predictor.py          # 预测器主类
+│   ├── DrugRepurposingPredictor  # 主预测类
+│   ├── TrainingConfig           # 训练配置
+│   └── NegativeSampler          # 负采样器
+├── explainer.py          # GNNExplainer模块 [NEW]
+│   ├── ExplanationResult        # 解释结果
+│   └── GNNExplainer             # 解释器
 ├── evaluator.py          # 评估指标
 └── demo.py               # 演示脚本
-
-核心类:
-├── MDKGDataLoader            # 数据加载
-├── HeteroRGCN                # 图神经网络
-│   ├── HeteroRGCNLayer       # 基础 RGCN 层
-│   ├── AttentionHeteroRGCNLayer  # 注意力 RGCN 层
-│   └── DistMultPredictor     # 链接预测器
-├── DrugRepurposingPredictor  # 主预测类
-└── LinkPredictor             # 推理封装
 ```
 
-#### 2.3.2 支持的实体和关系类型
-
-**实体类型** (来自 DPKG_types_Cor4.json):
-
-| 类型 | 英文 | 描述 |
-|------|------|------|
-| drug | 药物 | 治疗药物 |
-| disease | 疾病 | 精神疾病 |
-| gene | 基因 | 相关基因 |
-| signs | 体征 | 临床体征 |
-| symptom | 症状 | 疾病症状 |
-| Health_factors | 健康因素 | 风险/保护因素 |
-| method | 方法 | 诊断/治疗方法 |
-| physiology | 生理 | 生理过程 |
-| region | 区域 | 脑区等解剖结构 |
-
-**关系类型**:
-
-| 关系 | 描述 | 示例 |
-|------|------|------|
-| treatment_for | 治疗 | (quetiapine, treatment_for, schizophrenia) |
-| occurs_in | 发生于 | (symptom, occurs_in, disease) |
-| located_in | 位于 | (receptor, located_in, brain_region) |
-| help_diagnose | 辅助诊断 | (biomarker, help_diagnose, disease) |
-| risk_factor_of | 风险因素 | (gene, risk_factor_of, disease) |
-| associated_with | 关联 | (symptom, associated_with, disease) |
-| characteristic_of | 特征 | (phenotype, characteristic_of, disease) |
-| abbreviation_for | 缩写 | (ADHD, abbreviation_for, Attention...) |
-| hyponym_of | 下位词 | (bipolar I, hyponym_of, bipolar disorder) |
-
-### 2.4 训练流程
-
-#### 2.4.1 两阶段训练策略
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    Stage 1: Pre-training                    │
-│  目标: 学习通用的知识图谱嵌入                                 │
-│  数据: 所有边类型                                            │
-│  Epochs: 50                                                 │
-│  Learning Rate: 1e-3                                        │
-│  Proto Learning: OFF                                        │
-└─────────────────────────────────────────────────────────────┘
-                              │
-                              ▼
-┌─────────────────────────────────────────────────────────────┐
-│                    Stage 2: Fine-tuning                     │
-│  目标: 优化药物-疾病预测能力                                  │
-│  数据: 药物-疾病边 (treatment_for)                           │
-│  Epochs: 200                                                │
-│  Learning Rate: 5e-4                                        │
-│  Proto Learning: ON                                         │
-│  Similarity: embedding-based                                │
-│  Aggregation: rarity-weighted                               │
-└─────────────────────────────────────────────────────────────┘
-```
-
-#### 2.4.2 训练配置
+#### 2.5.2 训练配置
 
 ```python
 @dataclass
 class TrainingConfig:
     # 模型架构
-    n_inp: int = 128          # 输入维度
-    n_hid: int = 128          # 隐藏层维度
-    n_out: int = 128          # 输出维度
-    attention: bool = False   # 是否使用注意力
+    n_inp: int = 256          # 输入维度
+    n_hid: int = 256          # 隐藏层维度
+    n_out: int = 256          # 输出维度
+    attention: bool = True    # 是否使用注意力
     proto: bool = True        # 是否使用原型学习
-    proto_num: int = 3        # 原型数量
-    sim_measure: str = 'embedding'  # 相似度计算方式
-    agg_measure: str = 'rarity'     # 聚合方式
-    exp_lambda: float = 0.7   # 指数衰减参数
-    dropout: float = 0.1      # Dropout 率
+    proto_num: int = 5        # 原型数量 (K)
+    sim_measure: str = 'embedding'  # 相似度: embedding/profile/bert
+    agg_measure: str = 'rarity'     # 聚合: rarity/avg/learn
+    exp_lambda: float = 0.7   # 指数衰减参数 (TxGNN默认)
+    dropout: float = 0.2      # Dropout 率
     
     # 训练超参数
-    pretrain_epochs: int = 50
-    finetune_epochs: int = 200
-    pretrain_lr: float = 1e-3
-    finetune_lr: float = 5e-4
+    pretrain_epochs: int = 100
+    finetune_epochs: int = 300
+    pretrain_lr: float = 5e-4
+    finetune_lr: float = 1e-4
     batch_size: int = 1024
-    patience: int = 20        # 早停耐心值
-    neg_ratio: int = 1        # 负采样比例
+    weight_decay: float = 1e-5
+    patience: int = 30
+    neg_ratio: int = 5        # 负采样比例
+    
+    # Mini-batch (可扩展性)
+    use_mini_batch: bool = False
+    fanouts: List[int] = [15, 10, 5]
+    
+    # 可解释性
+    enable_explainer: bool = True
+    explainer_epochs: int = 100
+    explainer_lr: float = 0.01
 ```
 
-#### 2.4.3 评估指标
+### 2.6 评估指标
 
 | 指标 | 公式 | 说明 |
 |------|------|------|
@@ -767,14 +870,28 @@ class TrainingConfig:
 | Hits@K | $\text{Hits@K} = \frac{\|\{q: \text{rank}_q \leq K\}\|}{\|Q\|}$ | Top-K 命中率 |
 | AUROC | Area Under ROC Curve | ROC 曲线下面积 |
 | AUPRC | Area Under PR Curve | Precision-Recall 曲线下面积 |
+| Fidelity | $\frac{|s_{orig} - s_{masked}|}{s_{orig}}$ | 解释保真度 (用于GNNExplainer) |
 
-### 2.5 预测示例
+### 2.7 使用示例
+
+#### 2.7.1 基础预测
 
 ```python
+from prediction import DrugRepurposingPredictor, TrainingConfig
+
+# 自定义配置
+config = TrainingConfig(
+    proto=True,
+    proto_num=5,
+    sim_measure='embedding',
+    agg_measure='rarity',
+    exp_lambda=0.7
+)
+
 # 初始化预测器
 predictor = DrugRepurposingPredictor(
     data_folder="./models/InputsAndOutputs",
-    config=TrainingConfig(proto=True, proto_num=3)
+    config=config
 )
 
 # 加载数据并训练
@@ -782,14 +899,41 @@ predictor.load_data()
 predictor.train()
 
 # 预测药物的潜在适应症
-results = predictor.predict_repurposing("quetiapine")
-# 输出:
-# [('mania', 0.892), ('schizophrenia', 0.875), ('bipolar', 0.823), ...]
+results = predictor.predict_repurposing("quetiapine", top_k=10)
+for disease, score, onto in results:
+    print(f"{disease}: {score:.4f}")
 
 # 预测疾病的潜在药物
-drugs = predictor.predict_drugs_for_disease("depression")
-# 输出:
-# [('fluoxetine', 0.901), ('sertraline', 0.887), ('escitalopram', 0.865), ...]
+drugs = predictor.predict_treatments("depression", top_k=10)
+```
+
+#### 2.7.2 带解释的预测
+
+```python
+# 生成预测并解释
+explanation = predictor.explain_prediction(
+    drug_name="quetiapine",
+    disease_name="bipolar disorder",
+    num_hops=2
+)
+
+print(f"预测分数: {explanation.prediction_score:.4f}")
+print(f"重要路径:")
+for path in explanation.pathways[:5]:
+    print(f"  {path}")
+```
+
+#### 2.7.3 批量解释
+
+```python
+# 对多个药物-疾病对生成解释
+pairs = [
+    ("metformin", "type 2 diabetes"),
+    ("quetiapine", "schizophrenia"),
+    ("fluoxetine", "depression")
+]
+
+explanations = predictor.explain_batch(pairs)
 ```
 
 ---
@@ -859,13 +1003,15 @@ drugs = predictor.predict_drugs_for_disease("depression")
 
 2. **GraphRAG**: Edge, D., et al. (2024). "From Local to Global: A Graph RAG Approach to Query-Focused Summarization." *arXiv:2404.16130*
 
-3. **TxGNN**: Huang, K., et al. (2024). "Zero-shot prediction of therapeutic use of drugs with geometric deep learning and clinician centered design." *Nature Medicine*.
+3. **TxGNN**: Huang, K., et al. (2024). "Zero-shot prediction of therapeutic use of drugs with geometric deep learning and clinician centered design." *Nature Medicine*. https://www.nature.com/articles/s41591-023-02233-x
 
-4. **DistMult**: Yang, B., et al. (2015). "Embedding Entities and Relations for Learning and Inference in Knowledge Bases." *ICLR*.
+4. **GNNExplainer**: Ying, R., et al. (2019). "GNNExplainer: Generating Explanations for Graph Neural Networks." *NeurIPS*. https://arxiv.org/abs/1903.03894
 
-5. **RGCN**: Schlichtkrull, M., et al. (2018). "Modeling Relational Data with Graph Convolutional Networks." *ESWC*.
+5. **DistMult**: Yang, B., et al. (2015). "Embedding Entities and Relations for Learning and Inference in Knowledge Bases." *ICLR*.
 
-6. **Leiden Algorithm**: Traag, V., et al. (2019). "From Louvain to Leiden: guaranteeing well-connected communities." *Scientific Reports*.
+6. **RGCN**: Schlichtkrull, M., et al. (2018). "Modeling Relational Data with Graph Convolutional Networks." *ESWC*.
+
+7. **Leiden Algorithm**: Traag, V., et al. (2019). "From Louvain to Leiden: guaranteeing well-connected communities." *Scientific Reports*.
 
 ---
 
@@ -873,12 +1019,13 @@ drugs = predictor.predict_drugs_for_disease("depression")
 
 - KGARevion 论文: https://arxiv.org/abs/2410.04660
 - GraphRAG 论文: https://arxiv.org/abs/2404.16130
-- TxGNN 论文: https://www.nature.com/articles/s41591-024-03233-x
+- TxGNN 论文: https://www.nature.com/articles/s41591-023-02233-x
+- GNNExplainer 论文: https://arxiv.org/abs/1903.03894
 - DGL 文档: https://docs.dgl.ai/
 - PyTorch 文档: https://pytorch.org/docs/
 
 ---
 
-*文档版本: 2.0 (Updated with KGARevion paper compliance)*  
+*文档版本: 3.0 (Updated with GNNExplainer and Scalability Optimizations)*  
 *最后更新: 2025-02*  
 *MDKG Project*

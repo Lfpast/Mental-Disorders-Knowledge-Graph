@@ -5,11 +5,17 @@ Drug Repurposing Predictor
 Main prediction class that orchestrates data loading, model training,
 and drug repurposing prediction for the MDKG project.
 
-Inspired by TxGNN's approach to therapeutic prediction with:
+Based on TxGNN's approach to therapeutic prediction with:
 - Pre-training on all knowledge graph edges
 - Fine-tuning on drug-disease relations
 - Metric learning for zero-shot prediction
 - Disease-centric evaluation
+- GNNExplainer integration for prediction interpretability
+
+Scalability Optimizations:
+- Mini-batch training with neighbor sampling
+- Sparse operations for large graphs
+- Memory-efficient prototype learning
 
 Example:
     >>> from prediction import DrugRepurposingPredictor
@@ -17,6 +23,7 @@ Example:
     >>> predictor.load_data()
     >>> predictor.train(n_epochs=100)
     >>> results = predictor.predict_repurposing("quetiapine")
+    >>> explanation = predictor.explain_prediction("quetiapine", "depression")
 """
 
 import os
@@ -24,15 +31,15 @@ import json
 import pickle
 import time
 from typing import Dict, List, Tuple, Optional, Any, Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections import defaultdict
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.optim import Adam
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from torch.optim import Adam, AdamW
+from torch.optim.lr_scheduler import ReduceLROnPlateau, CosineAnnealingWarmRestarts
 from tqdm import tqdm
 
 try:
@@ -42,7 +49,8 @@ except ImportError:
     DGL_AVAILABLE = False
 
 from .data_loader import MDKGDataLoader
-from .models import HeteroRGCN, LinkPredictor
+from .models import HeteroRGCN, LinkPredictor, MiniBatchEdgeSampler
+from .explainer import GNNExplainer, ExplanationResult
 
 
 @dataclass
@@ -55,9 +63,9 @@ class TrainingConfig:
     attention: bool = True    # Enable attention for better aggregation
     proto: bool = True
     proto_num: int = 5        # Increased from 3 for more prototype neighbors
-    sim_measure: str = 'embedding'
-    agg_measure: str = 'rarity'
-    exp_lambda: float = 0.5   # Adjusted for better rare disease handling
+    sim_measure: str = 'embedding'  # Options: 'embedding', 'profile', 'bert', 'profile+embedding'
+    agg_measure: str = 'rarity'     # Options: 'rarity', 'avg', 'learn', 'heuristics-0.8'
+    exp_lambda: float = 0.7   # TxGNN paper default
     dropout: float = 0.2      # Increased dropout for regularization
     
     # Training hyperparameters
@@ -71,6 +79,16 @@ class TrainingConfig:
     
     # Negative sampling
     neg_ratio: int = 5           # Increased from 1 for harder negative samples
+    
+    # Mini-batch training (scalability)
+    use_mini_batch: bool = False  # Enable for large graphs
+    fanouts: List[int] = field(default_factory=lambda: [15, 10, 5])
+    num_workers: int = 0
+    
+    # Explainability
+    enable_explainer: bool = True
+    explainer_epochs: int = 100
+    explainer_lr: float = 0.01
     
     # Logging
     print_every: int = 10
@@ -232,15 +250,21 @@ class DrugRepurposingPredictor:
         self,
         split: str = 'random',
         seed: int = 42,
-        use_cache: bool = True
+        use_cache: bool = True,
+        data_source: str = 'sampled'
     ) -> None:
         """
         Load MDKG data and prepare for training.
         
         Args:
-            split: Data split strategy
+            split: Data split strategy ('random', 'disease_centric')
             seed: Random seed
             use_cache: Whether to use cached data
+            data_source: Which data to load. Options:
+                - 'sampled': Active learning sampled data (default, smaller)
+                - 'full': Full dataset (md_KG_all_0217.json)
+                - 'full_aug': Full dataset with augmentation
+                - 'train': Training set only
         """
         if not DGL_AVAILABLE:
             raise ImportError("DGL is required. Install with: pip install dgl")
@@ -248,8 +272,9 @@ class DrugRepurposingPredictor:
         print("\n" + "="*60)
         print("Loading MDKG Data")
         print("="*60)
+        print(f"  Data source: {data_source}")
         
-        self.data_loader = MDKGDataLoader(data_folder=self.data_folder)
+        self.data_loader = MDKGDataLoader(data_folder=self.data_folder, data_source=data_source)
         self.data_loader.load_data(use_cache=use_cache)
         self.G = self.data_loader.build_graph()
         self.data_loader.prepare_split(split=split, seed=seed)
@@ -762,6 +787,164 @@ class DrugRepurposingPredictor:
                 break
         
         return results
+    
+    def explain_prediction(
+        self,
+        drug_name: str,
+        disease_name: str,
+        relation: str = 'treatment_for',
+        num_hops: int = 2,
+        epochs: Optional[int] = None,
+        lr: Optional[float] = None,
+        return_pathways: bool = True,
+        visualize: bool = False
+    ) -> ExplanationResult:
+        """
+        Generate explanation for a drug-disease prediction using GNNExplainer.
+        
+        This method applies the GNNExplainer algorithm (arxiv:1903.03894) to
+        identify the most important edges and nodes in the knowledge graph
+        that contribute to the prediction.
+        
+        Args:
+            drug_name: Drug name
+            disease_name: Disease name
+            relation: Relation type
+            num_hops: Number of hops for subgraph extraction
+            epochs: GNNExplainer optimization epochs (default from config)
+            lr: Learning rate (default from config)
+            return_pathways: Extract important pathways
+            visualize: Generate visualization
+        
+        Returns:
+            ExplanationResult containing edge importance scores and pathways
+        
+        Example:
+            >>> explanation = predictor.explain_prediction("metformin", "type 2 diabetes")
+            >>> print(f"Top pathway: {explanation.pathways[0]}")
+            >>> print(f"Edge importance: {explanation.edge_importance[:5]}")
+        """
+        if not self.is_trained:
+            raise ValueError("Model not trained. Call train() first.")
+        
+        epochs = epochs or self.config.explainer_epochs
+        lr = lr or self.config.explainer_lr
+        
+        # Find drug and disease indices
+        drug_idx = self._find_entity_idx('drug', drug_name)
+        disease_idx = self._find_entity_idx('disease', disease_name)
+        
+        if drug_idx is None:
+            raise ValueError(f"Drug not found: {drug_name}")
+        if disease_idx is None:
+            raise ValueError(f"Disease not found: {disease_name}")
+        
+        # Initialize GNNExplainer with entity name mappings for readable output
+        explainer = GNNExplainer(
+            model=self.model,
+            G=self.G,
+            epochs=epochs,
+            lr=lr,
+            edge_size=0.005,
+            edge_ent=1.0,
+            node_feat_size=0.001,
+            node_feat_ent=0.1,
+            idx2entity=self.data_loader.idx2entity
+        )
+        
+        # Generate explanation
+        explanation = explainer.explain(
+            drug_idx=drug_idx,
+            disease_idx=disease_idx,
+            drug_name=drug_name,
+            disease_name=disease_name,
+            relation=relation
+        )
+        
+        # The explanation text is printed by the shell script
+        # Just return the result here
+        return explanation
+    
+    def explain_batch(
+        self,
+        drug_disease_pairs: List[Tuple[str, str]],
+        relation: str = 'treatment_for',
+        **kwargs
+    ) -> List[ExplanationResult]:
+        """
+        Generate explanations for multiple drug-disease pairs.
+        
+        Args:
+            drug_disease_pairs: List of (drug_name, disease_name) tuples
+            relation: Relation type
+            **kwargs: Additional arguments for explain_prediction
+        
+        Returns:
+            List of ExplanationResult objects
+        """
+        explanations = []
+        
+        for drug_name, disease_name in tqdm(drug_disease_pairs, desc="Generating explanations"):
+            try:
+                explanation = self.explain_prediction(
+                    drug_name, disease_name, relation, **kwargs
+                )
+                explanations.append(explanation)
+            except Exception as e:
+                print(f"Failed to explain {drug_name} -> {disease_name}: {e}")
+                explanations.append(None)
+        
+        return explanations
+    
+    def _find_entity_idx(self, entity_type: str, entity_name: str) -> Optional[int]:
+        """Find entity index by name with fuzzy matching.
+        
+        Tries multiple matching strategies:
+        1. Exact match with constructed entity_id
+        2. Substring match within entity_id
+        3. Substring match ignoring entity_type prefix
+        """
+        entity_name_lower = entity_name.lower().strip()
+        
+        # Try exact match first
+        entity_id = f"{entity_type}:{entity_name_lower}"
+        entity_idx = self.data_loader.entity2idx.get(entity_type, {}).get(entity_id)
+        
+        if entity_idx is not None:
+            return entity_idx
+        
+        # Try fuzzy match - look for best match
+        candidates = []
+        prefix = f"{entity_type}:"
+        
+        for eid, idx in self.data_loader.entity2idx.get(entity_type, {}).items():
+            # Remove type prefix for matching
+            eid_name = eid[len(prefix):] if eid.startswith(prefix) else eid
+            
+            # Exact match without prefix
+            if eid_name == entity_name_lower:
+                return idx
+            
+            # Substring match
+            if entity_name_lower in eid_name:
+                # Prefer shorter matches (more specific)
+                candidates.append((len(eid_name), idx, eid_name))
+            elif eid_name in entity_name_lower:
+                candidates.append((len(eid_name) + 100, idx, eid_name))  # Lower priority
+        
+        if candidates:
+            # Return the shortest (most specific) match
+            candidates.sort()
+            print(f"  Note: '{entity_name}' matched to '{candidates[0][2]}'")
+            return candidates[0][1]
+        
+        # Print available entities for debugging
+        all_entities = list(self.data_loader.entity2idx.get(entity_type, {}).keys())
+        similar = [e for e in all_entities if any(word in e.lower() for word in entity_name_lower.split())]
+        if similar:
+            print(f"  Available similar {entity_type} entities: {similar[:5]}")
+        
+        return None
     
     def save_model(self, path: Optional[str] = None) -> str:
         """

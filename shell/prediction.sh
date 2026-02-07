@@ -4,20 +4,27 @@
 # ==============================================================================
 #
 # This script provides automation for training and running the drug repurposing
-# prediction module based on TxGNN methodology.
+# prediction module based on TxGNN methodology with GNNExplainer support.
 #
 # Features:
 # - GNN model training with pre-training and fine-tuning
 # - Drug repurposing predictions
+# - Prediction explainability with GNNExplainer
 # - Model evaluation with disease-centric metrics
 # - Interactive prediction mode
 #
 # Usage:
-#   ./shell/prediction.sh train          # Train the model
-#   ./shell/prediction.sh predict <drug> # Predict for a drug
-#   ./shell/prediction.sh evaluate       # Evaluate model
-#   ./shell/prediction.sh demo           # Run interactive demo
-#   ./shell/prediction.sh quick          # Quick training for testing
+#   ./shell/prediction.sh train              # Train the model
+#   ./shell/prediction.sh predict <drug>     # Predict for a drug
+#   ./shell/prediction.sh treatments <disease> # Predict treatments for disease
+#   ./shell/prediction.sh explain <drug> <disease> # Explain prediction
+#   ./shell/prediction.sh evaluate           # Evaluate model
+#   ./shell/prediction.sh demo               # Run interactive demo
+#   ./shell/prediction.sh quick              # Quick training for testing
+#
+# References:
+#   - TxGNN: https://www.nature.com/articles/s41591-023-02233-x
+#   - GNNExplainer: https://arxiv.org/abs/1903.03894
 #
 # Requirements:
 #   - Python 3.8+
@@ -39,16 +46,23 @@ PREDICTION_DIR="$PROJECT_ROOT/prediction"
 DATA_DIR="$PROJECT_ROOT/models/InputsAndOutputs"
 OUTPUT_DIR="$DATA_DIR/output/prediction"
 
-# Training configuration
-PRETRAIN_EPOCHS=50
-FINETUNE_EPOCHS=200
-HIDDEN_DIM=128
-LEARNING_RATE=0.0005
+# Training configuration (aligned with TxGNN paper)
+PRETRAIN_EPOCHS=100
+FINETUNE_EPOCHS=300
+HIDDEN_DIM=256
+LEARNING_RATE=0.0001
 BATCH_SIZE=1024
+PROTO_NUM=5
+EXP_LAMBDA=0.7
 
 # Quick mode settings
 QUICK_PRETRAIN_EPOCHS=5
 QUICK_FINETUNE_EPOCHS=20
+
+# GNNExplainer settings
+EXPLAINER_EPOCHS=100
+EXPLAINER_LR=0.01
+NUM_HOPS=2
 
 # ==============================================================================
 # Helper Functions
@@ -122,6 +136,7 @@ train_model() {
     local PRETRAIN=$PRETRAIN_EPOCHS
     local FINETUNE=$FINETUNE_EPOCHS
     local SKIP_PRETRAIN=""
+    local DATA_SOURCE="sampled"
     
     # Parse arguments
     while [[ $# -gt 0 ]]; do
@@ -144,12 +159,17 @@ train_model() {
                 FINETUNE=$2
                 shift 2
                 ;;
+            --data-source)
+                DATA_SOURCE=$2
+                shift 2
+                ;;
             *)
                 shift
                 ;;
         esac
     done
     
+    print_step "Data source: $DATA_SOURCE"
     print_step "Pre-training epochs: $PRETRAIN"
     print_step "Fine-tuning epochs: $FINETUNE"
     
@@ -164,6 +184,7 @@ train_model() {
         --output-dir "$OUTPUT_DIR" \
         --pretrain-epochs $PRETRAIN \
         --finetune-epochs $FINETUNE \
+        --data-source "$DATA_SOURCE" \
         $SKIP_PRETRAIN
     
     print_step "Model saved to: $OUTPUT_DIR/model.pt"
@@ -230,6 +251,150 @@ print('=' * 60)
 for i, (drug, score, onto) in enumerate(results, 1):
     bar = '█' * int(score * 20) + '░' * (20 - int(score * 20))
     print(f'  {i:2d}. {drug[:40]:<40} {bar} {score:.4f}')
+"
+}
+
+# ==============================================================================
+# Explainability Functions (GNNExplainer)
+# ==============================================================================
+
+explain_prediction() {
+    local DRUG_NAME=$1
+    local DISEASE_NAME=$2
+    
+    if [ -z "$DRUG_NAME" ] || [ -z "$DISEASE_NAME" ]; then
+        echo "Usage: $0 explain <drug_name> <disease_name>"
+        echo "Example: $0 explain metformin 'type 2 diabetes'"
+        exit 1
+    fi
+    
+    print_header "Explaining Prediction: $DRUG_NAME -> $DISEASE_NAME"
+    
+    cd "$PROJECT_ROOT"
+    
+    python3 -c "
+import sys
+sys.path.insert(0, '.')
+from prediction import DrugRepurposingPredictor
+
+predictor = DrugRepurposingPredictor(data_folder='$DATA_DIR')
+predictor.load_data(use_cache=True)
+
+model_path = '$OUTPUT_DIR/model.pt'
+import os
+if os.path.exists(model_path):
+    predictor.load_model(model_path)
+else:
+    print('Training quick model...')
+    predictor.train(pretrain_epochs=5, finetune_epochs=20, skip_pretrain=True)
+
+# Generate explanation
+print()
+print('Generating explanation using GNNExplainer...')
+print('(This may take a moment)')
+print()
+
+try:
+    explanation = predictor.explain_prediction(
+        drug_name='$DRUG_NAME',
+        disease_name='$DISEASE_NAME',
+        num_hops=$NUM_HOPS,
+        epochs=$EXPLAINER_EPOCHS
+    )
+    
+    print()
+    print('=' * 70)
+    print()
+    
+    # Print the human-readable explanation
+    if explanation.explanation_text:
+        print(explanation.explanation_text)
+    else:
+        print(f'Prediction Score: {explanation.prediction_score:.4f}')
+        print('No detailed explanation available.')
+    
+    # Save explanation
+    import json
+    output_file = '$OUTPUT_DIR/explanation_${DRUG_NAME}_${DISEASE_NAME}.json'
+    with open(output_file.replace(' ', '_'), 'w', encoding='utf-8') as f:
+        json.dump(explanation.to_dict(), f, indent=2, ensure_ascii=False)
+    print()
+    print('=' * 70)
+    print(f'Explanation saved to: {output_file.replace(\" \", \"_\")}')
+    
+except Exception as e:
+    print(f'Error generating explanation: {e}')
+    import traceback
+    traceback.print_exc()
+"
+}
+
+explain_batch() {
+    local INPUT_FILE=$1
+    local OUTPUT_FILE=$2
+    
+    if [ -z "$INPUT_FILE" ] || [ -z "$OUTPUT_FILE" ]; then
+        echo "Usage: $0 explain-batch <input_file> <output_file>"
+        echo "Input file should contain drug,disease pairs, one per line"
+        exit 1
+    fi
+    
+    print_header "Batch Explanation Generation"
+    
+    cd "$PROJECT_ROOT"
+    
+    python3 -c "
+import sys
+import json
+sys.path.insert(0, '.')
+from prediction import DrugRepurposingPredictor
+
+predictor = DrugRepurposingPredictor(data_folder='$DATA_DIR')
+predictor.load_data(use_cache=True)
+
+model_path = '$OUTPUT_DIR/model.pt'
+import os
+if os.path.exists(model_path):
+    predictor.load_model(model_path)
+else:
+    print('Training quick model...')
+    predictor.train(pretrain_epochs=5, finetune_epochs=20, skip_pretrain=True)
+
+# Read pairs from file
+pairs = []
+with open('$INPUT_FILE', 'r') as f:
+    for line in f:
+        line = line.strip()
+        if line and ',' in line:
+            drug, disease = line.split(',', 1)
+            pairs.append((drug.strip(), disease.strip()))
+
+print(f'Processing {len(pairs)} drug-disease pairs...')
+
+results = []
+for drug, disease in pairs:
+    print(f'  Explaining: {drug} -> {disease}')
+    try:
+        explanation = predictor.explain_prediction(drug, disease, epochs=50)
+        results.append({
+            'drug': drug,
+            'disease': disease,
+            'prediction_score': explanation.prediction_score,
+            'fidelity': explanation.fidelity,
+            'top_edges': [(e[0], e[1], float(e[2]), e[3]) for e in explanation.edge_importance[:10]],
+            'pathways': explanation.pathways[:3]
+        })
+    except Exception as e:
+        results.append({
+            'drug': drug,
+            'disease': disease,
+            'error': str(e)
+        })
+
+with open('$OUTPUT_FILE', 'w') as f:
+    json.dump(results, f, indent=2)
+
+print(f'Results saved to: $OUTPUT_FILE')
 "
 }
 
@@ -352,26 +517,40 @@ show_help() {
     echo "Usage: $0 <command> [options]"
     echo ""
     echo "Commands:"
-    echo "  train [options]      Train the drug repurposing model"
-    echo "  predict <drug>       Predict new indications for a drug"
-    echo "  treatments <disease> Predict treatments for a disease"
-    echo "  evaluate             Evaluate model performance"
-    echo "  demo                 Run demo with sample predictions"
-    echo "  interactive          Start interactive prediction mode"
-    echo "  quick                Quick demo (train + predict)"
-    echo "  batch <in> <out>     Batch prediction from file"
-    echo "  check                Check dependencies and data"
+    echo "  train [options]           Train the drug repurposing model"
+    echo "  predict <drug>            Predict new indications for a drug"
+    echo "  treatments <disease>      Predict treatments for a disease"
+    echo "  explain <drug> <disease>  Explain a drug-disease prediction"
+    echo "  explain-batch <in> <out>  Batch explanation generation"
+    echo "  evaluate                  Evaluate model performance"
+    echo "  demo                      Run demo with sample predictions"
+    echo "  interactive               Start interactive prediction mode"
+    echo "  quick                     Quick demo (train + predict)"
+    echo "  batch <in> <out>          Batch prediction from file"
+    echo "  check                     Check dependencies and data"
     echo ""
     echo "Training Options:"
     echo "  --quick              Quick training mode (fewer epochs)"
     echo "  --skip-pretrain      Skip pre-training phase"
-    echo "  --pretrain-epochs N  Set pre-training epochs"
-    echo "  --finetune-epochs N  Set fine-tuning epochs"
+    echo "  --pretrain-epochs N  Set pre-training epochs (default: $PRETRAIN_EPOCHS)"
+    echo "  --finetune-epochs N  Set fine-tuning epochs (default: $FINETUNE_EPOCHS)"
+    echo "  --data-source SOURCE Set data source for training:"
+    echo "                         sampled  - Active Learning sampled data (default)"
+    echo "                         full     - Full MDKG dataset"
+    echo "                         full_aug - Full augmented dataset"
+    echo "                         train    - Training split only"
+    echo ""
+    echo "Explainability Options:"
+    echo "  The explain command uses GNNExplainer to identify important"
+    echo "  subgraph structures that contribute to predictions."
+    echo "  Reference: https://arxiv.org/abs/1903.03894"
     echo ""
     echo "Examples:"
     echo "  $0 train --quick"
+    echo "  $0 train --data-source full"
     echo "  $0 predict quetiapine"
     echo "  $0 treatments depression"
+    echo "  $0 explain metformin 'type 2 diabetes'"
     echo "  $0 batch drugs.txt results.json"
 }
 
@@ -390,6 +569,12 @@ main() {
             ;;
         treatments)
             predict_disease "$@"
+            ;;
+        explain)
+            explain_prediction "$@"
+            ;;
+        explain-batch)
+            explain_batch "$@"
             ;;
         evaluate)
             evaluate_model

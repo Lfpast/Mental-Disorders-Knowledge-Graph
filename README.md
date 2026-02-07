@@ -269,37 +269,6 @@ python GraphRAG/graph_rag_demo.py -q "How does lithium treat bipolar disorder?"
 python GraphRAG/graph_rag_demo.py --community -i
 ```
 
-#### Method 3: Python API
-```python
-from GraphRAG.kgarevion_agent import KGARevionAgent, KnowledgeGraphManager
-from GraphRAG.kgarevion_agent import OpenAIBackend, OllamaBackend
-
-# Initialize LLM backend
-llm = OpenAIBackend(api_key="your-api-key", model="gpt-4")
-# Or use local Ollama:
-# llm = OllamaBackend(model="llama3")
-
-# Initialize Knowledge Graph Manager
-config = {
-    'entity_linking_path': 'models/InputsAndOutputs/output/entity_linking_results.json',
-    'predictions_path': 'models/InputsAndOutputs/output/sampling_json_run_v1_sampled.json'
-}
-kg_manager = KnowledgeGraphManager(config)
-
-# Create KGARevion Agent
-agent = KGARevionAgent(
-    kg_manager=kg_manager,
-    llm_backend=llm,
-    use_community_detection=True  # Enable Leiden/Louvain optimization
-)
-
-# Query
-result = agent.query("What are the risk factors for schizophrenia?")
-print(result.answer)
-print(f"True triplets: {len([t for t in result.verified_triplets if t.status.value == 'true'])}")
-print(f"Incomplete triplets: {len([t for t in result.verified_triplets if t.status.value == 'incomplete'])}")
-```
-
 #### Supported LLM Backends
 
 | Backend | Description | Setup |
@@ -311,10 +280,10 @@ print(f"Incomplete triplets: {len([t for t in result.verified_triplets if t.stat
 
 ### Stage 7: Drug Repurposing Prediction (NEW)
 
-This stage enables **Drug-Disease Link Prediction** for drug repurposing in mental health disorders. The implementation is inspired by [TxGNN](https://www.nature.com/articles/s41591-024-03233-x) (Nature Medicine 2024).
+This stage enables **Drug-Disease Link Prediction** for drug repurposing in mental health disorders. The implementation is based on [TxGNN](https://www.nature.com/articles/s41591-023-02233-x) (Nature Medicine 2024) with [GNNExplainer](https://arxiv.org/abs/1903.03894) (NeurIPS 2019) for prediction interpretability.
 
 **Input**: MDKG Knowledge Graph (triplets + entity linking)  
-**Output**: Ranked drug-disease predictions for drug repurposing
+**Output**: Ranked drug-disease predictions for drug repurposing, with explanations
 
 #### How Drug Repurposing Prediction Works
 
@@ -324,6 +293,7 @@ The system implements a Graph Neural Network (GNN) approach with metric learning
 2. **Pre-training**: Train GNN on all edge types for link prediction
 3. **Fine-tuning**: Specialize on drug-disease relations with prototype learning
 4. **Zero-shot Prediction**: Leverage disease similarity for novel predictions
+5. **Explainability**: GNNExplainer identifies important subgraphs for predictions
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
@@ -334,34 +304,75 @@ The system implements a Graph Neural Network (GNN) approach with metric learning
         v                      v                      v                      v
    Build DGL graph        Learn node           Metric learning        Rank drugs for
    from triplets          embeddings           + prototypes           diseases
+                                                                            │
+                                                                            v
+                                                              ┌─────────────────┐
+                                                              │  GNNExplainer   │
+                                                              │  (Important     │
+                                                              │   Subgraphs)    │
+                                                              └─────────────────┘
 ```
 
 #### Key Features
 
 - **Zero-shot Prediction**: Predict treatments for diseases with no training data
-- **Disease Similarity**: Similar diseases share treatment patterns
-- **Prototype Learning**: Aggregate knowledge from similar entities
+- **Disease Similarity**: Similar diseases share treatment patterns (TxGNN λ=0.7)
+- **Prototype Learning**: Aggregate knowledge from similar entities (K=5 prototypes)
 - **Multi-relation**: Supports indication, contraindication, and off-label use
+- **Explainability**: GNNExplainer identifies important edges/pathways for predictions
+- **Scalability**: Mini-batch training with neighbor sampling for large KGs
 
 #### Method 1: Shell Script
 ```bash
-# Train the model
+# Train the model (full training with pretrain + finetune)
+# --data-source: 选择训练数据 (sampled|full|full_aug|train)
+#   sampled (默认): Active Learning 采样后的数据，较小
+#   full: 全量数据集 md_KG_all_0217.json
+#   full_aug: 全量增强数据集
+#   train: 仅训练集
 bash shell/prediction.sh train
+bash shell/prediction.sh train --data-source full  # 使用全量数据训练
 
-# Quick training (for testing)
+# Quick training (快速测试模式，跳过pretrain，减少epochs)
 bash shell/prediction.sh quick
 
-# Predict new indications for a drug
+# Predict new indications for a drug (药物重定位)
+# 输入: 药物名称
+# 输出: 该药物可能治疗的疾病列表，按预测分数排序
 bash shell/prediction.sh predict quetiapine
 
-# Predict treatments for a disease
+# Predict treatments for a disease (疾病治疗预测)
+# 输入: 疾病名称
+# 输出: 可能治疗该疾病的药物列表，按预测分数排序
 bash shell/prediction.sh treatments depression
 
-# Evaluate model performance
+# Explain a specific prediction (预测解释 - GNNExplainer)
+# 输入: <药物名称> <疾病名称>
+# 输出: 
+#   - 预测分数
+#   - 贡献最大的边（药物-基因-疾病路径等）
+#   - 重要的生物学通路
+#   - 人类可读的解释文本
+# 注意: 药物和疾病名称必须存在于知识图谱中，支持模糊匹配
+bash shell/prediction.sh explain metformin diabetes
+
+# Batch explanation generation (批量生成解释)
+# 输入文件格式 (pairs.txt): 每行一个 "药物,疾病" 对
+#   metformin,diabetes
+#   quetiapine,schizophrenia
+#   fluoxetine,depression
+# 输出: JSON文件包含每对的解释结果
+bash shell/prediction.sh explain-batch pairs.txt explanations.json
+
+# Evaluate model performance (评估模型性能)
+# 输出: MRR, Hits@1/5/10, AUROC, AUPRC 等指标
 bash shell/prediction.sh evaluate
 
-# Interactive mode
+# Interactive mode (交互式预测模式)
 bash shell/prediction.sh interactive
+
+# Check dependencies (检查依赖和数据)
+bash shell/prediction.sh check
 ```
 
 #### Method 2: Python Script
@@ -379,38 +390,19 @@ python -m prediction.demo --quick --demo
 python -m prediction.demo --predict aripiprazole
 ```
 
-#### Method 3: Python API
-```python
-from prediction import DrugRepurposingPredictor, DrugRepurposingEvaluator
+#### GNNExplainer Details
 
-# Initialize predictor
-predictor = DrugRepurposingPredictor(
-    data_folder="./models/InputsAndOutputs"
-)
+GNNExplainer (arxiv:1903.03894) identifies the most important subgraph structures that contribute to a prediction by optimizing learnable edge masks:
 
-# Load data and train
-predictor.load_data(split='random', seed=42)
-predictor.train()
+$$
+\max_{M} MI(Y, (G_S, X_S)) = H(Y) - H(Y | G_S, X_S)
+$$
 
-# Drug repurposing: Find new indications for a drug
-results = predictor.predict_repurposing("quetiapine", top_k=10)
-for disease, score, onto_info in results:
-    print(f"{disease}: {score:.4f}")
-
-# Treatment prediction: Find drugs for a disease  
-treatments = predictor.predict_treatments("depression", top_k=10)
-for drug, score, onto_info in treatments:
-    print(f"{drug}: {score:.4f}")
-
-# Get specific drug-disease score
-score = predictor.predict_drug_disease("lithium", "bipolar")
-print(f"Lithium for Bipolar: {score:.4f}")
-
-# Evaluate model
-evaluator = DrugRepurposingEvaluator(predictor)
-results = evaluator.full_evaluation()
-print(results['disease_centric'])
-```
+**Output includes:**
+- `edge_mask`: Importance weight for each edge (0-1)
+- `edge_importance`: Ranked list of important edges
+- `pathways`: Human-readable important pathways
+- `fidelity`: How well the explanation captures the prediction
 
 #### Evaluation Metrics
 
@@ -420,15 +412,18 @@ print(results['disease_centric'])
 | Hits@K | Proportion of true predictions in top K |
 | AUROC | Area Under ROC Curve (classification) |
 | AUPRC | Area Under Precision-Recall Curve |
+| Fidelity | GNNExplainer explanation quality |
 
 #### Model Architecture
 
 The prediction module uses **HeteroRGCN** (Heterogeneous Relational Graph Convolutional Network):
 
+- **3-Layer Architecture**: With residual connections (aligned with TxGNN)
 - **Node Embeddings**: Learnable embeddings for drugs, diseases, genes, symptoms
 - **Message Passing**: Relation-specific weight matrices for each edge type
 - **Link Prediction**: DistMult scoring with relation embeddings
-- **Metric Learning**: Prototype-based augmentation for rare diseases
+- **Metric Learning**: Prototype-based augmentation for rare diseases (λ=0.7)
+- **Scalability**: Mini-batch training with DGL NeighborSampler
 
 ---
 
@@ -451,9 +446,11 @@ The prediction module uses **HeteroRGCN** (Heterogeneous Relational Graph Convol
 
 ## References
 
-- **TxGNN Paper**: [Zero-shot prediction of therapeutic use with geometric deep learning](https://www.nature.com/articles/s41591-024-03233-x)
-  - The drug repurposing prediction is inspired by TxGNN's approach using GNNs with metric learning
+- **TxGNN Paper**: [Zero-shot prediction of therapeutic use with geometric deep learning](https://www.nature.com/articles/s41591-023-02233-x)
+  - The drug repurposing prediction is based on TxGNN's approach using GNNs with metric learning
+- **GNNExplainer Paper**: [Generating Explanations for Graph Neural Networks](https://arxiv.org/abs/1903.03894)
+  - The explainability module implements GNNExplainer for prediction interpretation
 - **KGARevion Paper**: [An AI Agent for Knowledge-Intensive Biomedical QA](https://arxiv.org/abs/2410.04660)
-  - The Graph RAG implementation is inspired by the KGARevion approach which uses Generate-Review-Revise-Answer actions
+  - The Graph RAG implementation follows the KGARevion approach with Generate-Review-Revise-Answer actions
 - **SynSpERT**: Span-based Joint Entity and Relation Extraction with Transformers
 - **SapBERT**: Self-Alignment Pre-training for Biomedical Entity Representations

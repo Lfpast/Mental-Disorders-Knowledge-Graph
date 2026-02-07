@@ -124,7 +124,8 @@ class MDKGDataLoader:
         self,
         data_folder: str = "./models/InputsAndOutputs",
         config_path: Optional[str] = None,
-        cache_dir: Optional[str] = None
+        cache_dir: Optional[str] = None,
+        data_source: str = 'sampled'
     ):
         """
         Initialize MDKG data loader.
@@ -133,15 +134,29 @@ class MDKGDataLoader:
             data_folder: Path to InputsAndOutputs folder
             config_path: Optional path to configuration file
             cache_dir: Directory for caching processed data
+            data_source: Which data to load. Options:
+                - 'sampled': Active learning sampled data (default)
+                - 'full': Full dataset (md_KG_all_0217.json)
+                - 'full_aug': Full dataset with augmentation (md_KG_all_0217_agu.json)
+                - 'train': Training set only (md_train_KG_0217.json)
         """
         self.data_folder = data_folder
         self.config_path = config_path
         self.cache_dir = cache_dir or os.path.join(data_folder, "cache", "prediction")
+        self.data_source = data_source
         
-        # Paths
-        self.triplets_path = os.path.join(
-            data_folder, "output", "sampling_json_run_v1_sampled.json"
-        )
+        # Select triplets path based on data_source
+        DATA_SOURCE_PATHS = {
+            'sampled': os.path.join(data_folder, "output", "sampling_json_run_v1_sampled.json"),
+            'full': os.path.join(data_folder, "input", "md_KG_all_0217.json"),
+            'full_aug': os.path.join(data_folder, "input", "md_KG_all_0217_agu.json"),
+            'train': os.path.join(data_folder, "input", "md_train_KG_0217.json"),
+        }
+        
+        if data_source not in DATA_SOURCE_PATHS:
+            raise ValueError(f"Unknown data_source: {data_source}. Options: {list(DATA_SOURCE_PATHS.keys())}")
+        
+        self.triplets_path = DATA_SOURCE_PATHS[data_source]
         self.entity_linking_path = os.path.join(
             data_folder, "output", "entity_linking_results.json"
         )
