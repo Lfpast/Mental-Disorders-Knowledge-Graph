@@ -25,7 +25,7 @@
         "eval_every": 10
     },
     "data": {
-        "data_source": "sampled",
+        "data_source": "full_aug",
         "split": "random",
         "seed": 42,
         "train_ratio": 0.8,
@@ -34,7 +34,7 @@
     },
     "paths": {
         "data_folder": "./models/InputsAndOutputs",
-        "triplets_file": "output/sampling_json_run_v1_sampled.json",
+        "triplets_file": "./models/InputsAndOutputs/input/md_KG_all_0217_aug.json",
         "entity_linking_file": "output/entity_linking_results.json",
         "output_dir": "output/prediction",
         "model_file": "model.pt",
