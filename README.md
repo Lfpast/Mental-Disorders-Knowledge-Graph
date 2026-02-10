@@ -368,7 +368,8 @@ python -m predictor.pipeline_task1 \
   --experiment-name exp_v3_hop2_stable \
   --run-tests \
   -- --hop 2 --num_epochs 20 --lr 0.0005 --margin 3.0 \
-     --loss_reduction mean --edge_dropout 0.2 --batch_size 16
+     --loss_reduction mean --edge_dropout 0.2 --batch_size 16 \
+     --num_workers 0
 ```
 
 #### Arguments
@@ -382,31 +383,74 @@ python -m predictor.pipeline_task1 \
 | `--run-tests` | No | `false` | If set, runs `test_auc.py` and `test_ranking.py` after training |
 | `--` (remainder) | No | — | All arguments after `--` are forwarded directly to GraIL's `train.py` |
 
-#### GraIL Training Arguments (passed after `--`)
+#### GraIL `train.py` Arguments (passed after `--`)
 
-These are the arguments supported by `grail/train.py` and passed through via `--grail-args`:
+These是 `grail/train.py` 支持的全部 CLI 参数，通过 `--` 传递给 predictor wrapper。下表列出了源码中的真实默认值与我们推荐的 MDKG 配置：
 
-| Argument | Default | Description |
-|----------|---------|-------------|
-| `--hop` | `2` | Enclosing subgraph hop radius. Higher = richer context but slower. Recommended: `2` |
-| `--num_epochs` | `20` | Number of training epochs |
-| `--lr` | `0.0005` | Adam optimizer learning rate |
-| `--margin` | `3.0` | Margin for `MarginRankingLoss`. Controls the minimum score gap between positive and negative samples |
-| `--loss_reduction` | `mean` | Loss reduction: `mean` (recommended) or `sum` |
-| `--loss_type` | `margin` | Loss function: `margin` (MarginRankingLoss) or `bce` (BCEWithLogitsLoss) |
-| `--edge_dropout` | `0.2` | Edge dropout rate during training (disabled at eval time) |
-| `--dropout` | `0.0` | Node feature dropout rate in GNN layers |
-| `--batch_size` | `16` | Training batch size |
-| `--l2` | `0.0` | L2 weight decay regularization constant |
-| `--clip` | `10.0` | Maximum gradient norm for clipping |
-| `--emb_dim` | `32` | Entity embedding dimension |
-| `--num_gcn_layers` | `3` | Number of R-GCN message passing layers |
-| `--num_bases` | `4` | Number of basis functions for R-GCN weight decomposition |
-| `--num_neg_samples_per_link` | `1` | Negative samples per positive training link |
-| `--add_traspose_rels` | `False` | Whether to add inverse relation types (doubles relation count) |
-| `--use_scheduler` | `false` | Enable cosine annealing learning rate scheduler |
-| `--gnn_agg_type` | `sum` | GNN aggregation type: `sum`, `mlp`, or `gru` |
-| `--max_nodes_per_hop` | `100` | Maximum nodes sampled per hop (controls subgraph size) |
+**Experiment Setup**
+
+| Argument | Short | Default | Recommended | Description |
+|----------|-------|---------|-------------|-------------|
+| `--experiment_name` | `-e` | `default` | — | 实验名称；在 `experiments/` 下创建同名文件夹保存模型和日志 |
+| `--dataset` | `-d` | — | `MDKG_v1` | 数据集目录名（位于 `grail/data/` 下） |
+| `--gpu` | | `0` | `0` | 使用哪个 GPU（设备编号） |
+| `--disable_cuda` | | `False` | — | 禁用 CUDA，强制 CPU 运算 |
+| `--load_model` | | `False` | — | 是否加载已有模型继续训练 |
+| `--train_file` | `-tf` | `train` | `train` | 训练三元组文件名（不含 `.txt` 后缀） |
+| `--valid_file` | `-vf` | `valid` | `valid` | 验证三元组文件名（不含 `.txt` 后缀） |
+
+**Training Regime**
+
+| Argument | Short | Default | Recommended | Description |
+|----------|-------|---------|-------------|-------------|
+| `--num_epochs` | `-ne` | `100` | `20` | 训练轮数 |
+| `--eval_every` | | `3` | `3` | 每隔多少 epoch 做一次验证 |
+| `--eval_every_iter` | | `455` | — | 每隔多少 iteration 做一次验证 |
+| `--save_every` | | `10` | `10` | 每隔多少 epoch 保存一次 checkpoint |
+| `--early_stop` | | `100` | `100` | 早停耐心值（验证 AUC 连续不提升的轮数） |
+| `--optimizer` | | `Adam` | `Adam` | 优化器类型 |
+| `--lr` | | `0.01` | `0.0005` | 学习率 |
+| `--clip` | | `1000` | `1000` | 梯度裁剪最大范数 |
+| `--l2` | | `5e-4` | `0.0` | L2 权重衰减正则化系数 |
+| `--margin` | | `10` | `3.0` | MarginRankingLoss 的 margin 值 |
+| `--loss_reduction` | | `sum` | `mean` | 损失缩减方式：`mean`（推荐）或 `sum` |
+| `--loss_type` | | `margin` | `margin` | 损失函数：`margin`（MarginRankingLoss）或 `bce`（BCEWithLogitsLoss） |
+| `--use_scheduler` | | `False` | — | 启用 CosineAnnealing 学习率调度器 |
+
+**Data Processing**
+
+| Argument | Short | Default | Recommended | Description |
+|----------|-------|---------|-------------|-------------|
+| `--max_links` | | `1000000` | — | 最大训练链接数（内存不足时可降低） |
+| `--hop` | | `3` | `2` | 封闭子图跳数。越大上下文越丰富但越慢，推荐 `2` |
+| `--max_nodes_per_hop` | `-max_h` | `None` | — | 每跳最大采样节点数（`None` = 不限制） |
+| `--use_kge_embeddings` | `-kge` | `False` | — | 是否使用预训练 KGE 嵌入 |
+| `--kge_model` | | `TransE` | — | 预训练 KGE 模型类型（仅当 `-kge True` 时生效） |
+| `--model_type` | `-m` | `dgl` | `dgl` | 子图存储格式：`ssp` 或 `dgl` |
+| `--constrained_neg_prob` | `-cn` | `0.0` | `0.0` | 约束负采样概率（采样同类型头/尾的概率） |
+| `--batch_size` | | `16` | `16` | 训练批大小 |
+| `--num_neg_samples_per_link` | `-neg` | `1` | `1` | 每条正样本对应的负样本数 |
+| `--num_workers` | | `8` | **`0`** | DataLoader 工作进程数 |
+| `--add_traspose_rels` | `-tr` | `False` | `False` | 是否添加逆关系（关系数翻倍） |
+| `--enclosing_sub_graph` | `-en` | `True` | `True` | 是否仅使用封闭子图 |
+
+> **⚠️ 重要：`--num_workers` 必须设置为 `0`！**  
+> 默认值为 `8`，但在 CUDA 环境下使用多进程 DataLoader 会导致 **CUDA 初始化错误**（`RuntimeError: Cannot re-initialize CUDA in forked subprocess`）。这是因为 PyTorch 的 fork-based 多进程与 CUDA 上下文不兼容。**务必在所有训练和测试命令中传入 `--num_workers 0`**。
+
+**Model Architecture**
+
+| Argument | Short | Default | Recommended | Description |
+|----------|-------|---------|-------------|-------------|
+| `--rel_emb_dim` | `-r_dim` | `32` | `32` | 关系嵌入维度 |
+| `--attn_rel_emb_dim` | `-ar_dim` | `32` | `32` | 注意力关系嵌入维度 |
+| `--emb_dim` | `-dim` | `32` | `32` | 实体嵌入维度 |
+| `--num_gcn_layers` | `-l` | `3` | `3` | R-GCN 消息传播层数 |
+| `--num_bases` | `-b` | `4` | `4` | R-GCN 权重分解的基函数数量 |
+| `--dropout` | | `0` | `0.2` | GNN 层节点特征 Dropout 率 |
+| `--edge_dropout` | | `0.5` | `0.2` | 子图边 Dropout 率（训练时启用，评估时关闭） |
+| `--gnn_agg_type` | `-a` | `sum` | `sum` | GNN 聚合类型：`sum`、`mlp` 或 `gru` |
+| `--add_ht_emb` | `-ht` | `True` | `True` | 是否拼接头/尾节点嵌入到图池化表示 |
+| `--has_attn` | `-attn` | `True` | `True` | 是否在模型中使用注意力机制 |
 
 #### Output Files
 
@@ -418,6 +462,52 @@ grail/experiments/<experiment_name>/
 └── params.json                   # Hyperparameters used
 ```
 
+#### GraIL `test_auc.py` Arguments
+
+用于评估模型在测试集上的 AUC-ROC 和 AUC-PR：
+
+| Argument | Short | Default | Description |
+|----------|-------|---------|-------------|
+| `--experiment_name` | `-e` | `default` | 实验名称（从对应目录加载 checkpoint） |
+| `--dataset` | `-d` | `Toy` | 数据集目录名 |
+| `--train_file` | `-tf` | `train` | 训练三元组文件名 |
+| `--test_file` | `-t` | `test` | 测试三元组文件名 |
+| `--runs` | | `1` | 重复运行次数（用于计算均值和标准差） |
+| `--gpu` | | `0` | GPU 设备编号 |
+| `--disable_cuda` | | `False` | 禁用 CUDA |
+| `--max_links` | | `100000` | 最大测试链接数 |
+| `--hop` | | `3` | 封闭子图跳数（需与训练时一致） |
+| `--max_nodes_per_hop` | `-max_h` | `None` | 每跳最大节点数 |
+| `--use_kge_embeddings` | `-kge` | `False` | 是否使用预训练 KGE 嵌入 |
+| `--kge_model` | | `TransE` | KGE 模型类型 |
+| `--model_type` | `-m` | `dgl` | 子图存储格式 |
+| `--constrained_neg_prob` | `-cn` | `0` | 约束负采样概率 |
+| `--num_neg_samples_per_link` | `-neg` | `1` | 每条正样本的负样本数 |
+| `--batch_size` | | `16` | 批大小 |
+| `--num_workers` | | `8` | DataLoader 工作进程数（**必须设为 `0`**） |
+| `--add_traspose_rels` | `-tr` | `False` | 是否添加逆关系 |
+| `--enclosing_sub_graph` | `-en` | `True` | 是否仅使用封闭子图 |
+
+#### GraIL `test_ranking.py` Arguments
+
+用于评估 MRR 和 Hits@K 排名指标：
+
+| Argument | Short | Default | Description |
+|----------|-------|---------|-------------|
+| `--experiment_name` | `-e` | `fb_v2_margin_loss` | 实验名称 |
+| `--dataset` | `-d` | `FB237_v2` | 数据集目录名 |
+| `--mode` | `-m` | `sample` | 负采样模式：`sample`（随机采样）、`all`（全实体枚举）、`ruleN`（规则预测） |
+| `--use_kge_embeddings` | `-kge` | `False` | 是否使用预训练 KGE 嵌入 |
+| `--kge_model` | | `TransE` | KGE 模型类型 |
+| `--enclosing_sub_graph` | `-en` | `True` | 是否仅使用封闭子图 |
+| `--hop` | | `3` | 封闭子图跳数（需与训练时一致） |
+| `--add_traspose_rels` | `-tr` | `False` | 是否添加逆关系 |
+| `--num_samples` | | `50` | `sample` 模式下每条测试链接的负样本数 |
+| `--sequential` | | `False` | 使用顺序处理代替多进程（WSL/低内存环境更安全） |
+| `--num_workers` | | `None` | 多进程 worker 数（`None` = 使用全部 CPU 核心） |
+
+> **⚠️ `--mode all` 注意事项**：`all` 模式会对每条测试三元组枚举全部实体（MDKG_v1: 80×5104×2 = 816K 子图），内存消耗巨大。在 WSL 环境下**必须加 `--sequential`** 或限制 `--num_workers` 以避免 OOM 导致系统崩溃。
+
 #### Running GraIL Directly (without predictor wrapper)
 
 For finer control, you can invoke GraIL scripts directly:
@@ -426,23 +516,31 @@ For finer control, you can invoke GraIL scripts directly:
 # Activate environment
 conda activate MDKG
 
-# Train
+# Train (⚠️ --num_workers 0 是必须的)
 cd grail
 GRAIL_LMDB_MAP_SIZE_MB=512 python train.py \
   -d MDKG_v1 -e exp_v3_hop2_stable \
   --hop 2 --num_epochs 20 --lr 0.0005 --margin 3.0 \
-  --loss_reduction mean --edge_dropout 0.2 --batch_size 16
+  --loss_reduction mean --edge_dropout 0.2 --batch_size 16 \
+  --num_workers 0
 
-# Evaluate AUC
+# Evaluate AUC (⚠️ --num_workers 0 是必须的)
 GRAIL_LMDB_MAP_SIZE_MB=512 python test_auc.py \
-  -d MDKG_v1 -e exp_v3_hop2_stable --hop 2
+  -d MDKG_v1 -e exp_v3_hop2_stable --hop 2 \
+  --num_workers 0
 
-# Evaluate Ranking (MRR, Hits@K)
+# Evaluate Ranking — sample mode（快速，WSL 安全）
 GRAIL_LMDB_MAP_SIZE_MB=512 python test_ranking.py \
   -d MDKG_v1 -e exp_v3_hop2_stable --hop 2 --mode sample
+
+# Evaluate Ranking — all mode（完整，需加 --sequential）
+GRAIL_LMDB_MAP_SIZE_MB=512 python test_ranking.py \
+  -d MDKG_v1 -e exp_v3_hop2_stable --hop 2 --mode all --sequential
 ```
 
-> **Note**: Set `GRAIL_LMDB_MAP_SIZE_MB=512` (or higher) to avoid LMDB map-full errors on large datasets.
-> For ranking tests, `--mode sample` (50 negatives/triple) is fast and WSL-safe; `--mode all` enumerates all entities but requires significant memory and may cause I/O issues on WSL.
+> **⚠️ 关键注意事项**：
+> - **`--num_workers 0` 是必须的**：`train.py` 和 `test_auc.py` 的默认值为 `8`，但在 CUDA 环境下多进程 DataLoader 会触发 `RuntimeError: Cannot re-initialize CUDA in forked subprocess`。务必显式传入 `--num_workers 0`。
+> - 设置 `GRAIL_LMDB_MAP_SIZE_MB=512`（或更高）以避免 LMDB map-full 错误。
+> - Ranking 测试中，`--mode sample`（50 negatives/triple）速度快且 WSL 安全；`--mode all` 枚举所有实体，需要大量内存，在 WSL 下**必须加 `--sequential`**。
 
 ---

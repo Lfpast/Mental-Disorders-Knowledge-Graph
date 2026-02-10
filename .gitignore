@@ -48,6 +48,9 @@ models/InputsAndOutputs/output/*
 models/InputsAndOutputs/pretrained/*
 !models/InputsAndOutputs/pretrained/.gitkeep
 
+# 4. Grail folder (untracked)
+grail/
+
 # Note: 'configs' directories are NOT ignored as they are part of the source code.
 # models/InputsAndOutputs/configs/ -> Kept
 # models/SynSpERT/configs/         -> Kept
