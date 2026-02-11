@@ -1,6 +1,7 @@
 import argparse
 import os
 from .grail_runner import run_grail_test_auc, run_grail_test_ranking, run_grail_train
+from .batch_processor import TrainingOptimizer
 
 
 def parse_args() -> argparse.Namespace:
@@ -10,6 +11,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--experiment-name", required=True, help="Experiment name for GraIL logs")
     parser.add_argument("--python", default="python", help="Python executable")
     parser.add_argument("--run-tests", action="store_true")
+    parser.add_argument(
+        "--optimized", action="store_true",
+        help="Use Step 2 optimizations: subgraph caching + direct graph construction",
+    )
     parser.add_argument("--grail-args", nargs=argparse.REMAINDER, default=[], help="Extra args passed to GraIL train.py")
     return parser.parse_args()
 
@@ -19,13 +24,20 @@ def main() -> None:
     if not os.path.isdir(args.grail_repo):
         raise ValueError("GraIL repo path does not exist")
 
-    extra_args = args.grail_args if args.grail_args else None
+    extra_args = list(args.grail_args) if args.grail_args else []
+
+    # Step 2 optimizations: inject --cache_subgraphs and set env var
+    if args.optimized:
+        os.environ["GRAIL_LMDB_MAP_SIZE_MB"] = os.environ.get("GRAIL_LMDB_MAP_SIZE_MB", "512")
+        if "--cache_subgraphs" not in extra_args:
+            extra_args.append("--cache_subgraphs")
+
     run_grail_train(
         args.grail_repo,
         args.dataset_name,
         args.experiment_name,
         python_exe=args.python,
-        extra_args=extra_args,
+        extra_args=extra_args or None,
     )
 
     if args.run_tests:
